@@ -30,35 +30,32 @@ SCRIPT_NAME='vllm-native-arch-deploy'
 NATIVE_VLLM_IMAGE="${NATIVE_VLLM_IMAGE:-}"
 # MODEL_DIR = 目标机上的权重目录（指向含 config.json 的目录），必填
 MODEL_DIR="${MODEL_DIR:-}"
-# NATIVE_VLLM_PREFILL_GPUS = prefill 使用的卡（目标机物理序号，逗号分隔）
-NATIVE_VLLM_PREFILL_GPUS="${NATIVE_VLLM_PREFILL_GPUS:-0,1,2,3}"
-# NATIVE_VLLM_DECODE_GPUS = decode 使用的卡（逗号分隔）
-NATIVE_VLLM_DECODE_GPUS="${NATIVE_VLLM_DECODE_GPUS:-4,5,6,7}"
-# NATIVE_VLLM_MOEFIX = decode 侧注入 MoE scratch 补丁（DP>1 必需；1 开 0 关）
+# NATIVE_VLLM_MOEFIX = decode 侧注入 MoE scratch 补丁（1=开 0=关）：DP>1 必需；默认 1
 NATIVE_VLLM_MOEFIX="${NATIVE_VLLM_MOEFIX:-1}"
-# NATIVE_VLLM_AUTOTUNE = flashinfer autotune（1=开 0=关），**仅对 decode 侧生效**；
+# NATIVE_VLLM_AUTOTUNE = flashinfer autotune（1=开 0=关）：仅对 decode 侧生效，prefill/standalone 强制关闭；默认 0
 # prefill（PP）/ standalone 侧一律强制关闭：PP + autotune 在 _profile_single_kernel 里要跨 rank
 # all_reduce，两个 PP rank 调优进度一旦错开就永久死锁（2026-10-17 实测：PP1 早调完 → PP0 all_reduce 无人应答）。
 NATIVE_VLLM_AUTOTUNE="${NATIVE_VLLM_AUTOTUNE:-0}"
-# NATIVE_VLLM_DEV_MODE = vLLM 服务端 DEV 模式（1=开 0=关；对应 VLLM_SERVER_DEV_MODE=1）。开启后 vLLM 才暴露
+# NATIVE_VLLM_DEV_MODE = vLLM 服务端 DEV 模式（1=开 0=关）：开启后暴露 /reset_prefix_cache、/sleep、/collective_rpc 等管理端点；默认 0
 #   /reset_prefix_cache、/reset_mm_cache、/sleep、/wake_up、/collective_rpc 等管理端点，可用于清 HBM/KV 缓存
 NATIVE_VLLM_DEV_MODE="${NATIVE_VLLM_DEV_MODE:-0}"
-# NATIVE_VLLM_PROFILER = vLLM profiler 开关（1=开 0=关），开启后两侧引擎追加 --profiler-config（torch，落盘 <工作目录>/profiles，start_profile 后跳 5 步、最多记 50 步）
+# NATIVE_VLLM_PROFILER = vLLM profiler（1=开 0=关）：两侧引擎追加 --profiler-config（torch），产物落 <工作目录>/profiles；默认 0
 NATIVE_VLLM_PROFILER="${NATIVE_VLLM_PROFILER:-0}"
-# NATIVE_VLLM_XCCL_ENV_PREFILL = prefill 侧应用 XCCL 插件（xccl-vllm-turbo）的专属环境变量，逗号分隔（如 XCCL_TURBO_ENABLE_MOONCAKE=1,XCCL_TURBO_ENABLE_RMSNORM=1）；留空=不装插件
+# NATIVE_VLLM_XCCL_ENV_PREFILL = prefill 侧开启 XCCL 加速插件（xccl-vllm-turbo）。填该侧要注入的环境变量，逗号分隔的 KEY=VALUE，如 XCCL_TURBO_ENABLE_MOONCAKE=1,XCCL_TURBO_ENABLE_RMSNORM=1；留空=prefill 侧不安装插件
 NATIVE_VLLM_XCCL_ENV_PREFILL="${NATIVE_VLLM_XCCL_ENV_PREFILL:-}"
-# NATIVE_VLLM_XCCL_ENV_DECODE = decode 侧同上（留空=该侧不装插件）
+# NATIVE_VLLM_XCCL_ENV_DECODE = decode 侧开启 XCCL 加速插件（xccl-vllm-turbo）。填该侧要注入的环境变量，逗号分隔的 KEY=VALUE，如 XCCL_TURBO_ENABLE_MOONCAKE=1,XCCL_TURBO_ENABLE_FLASH_MLA=1；留空=decode 侧不安装插件
 NATIVE_VLLM_XCCL_ENV_DECODE="${NATIVE_VLLM_XCCL_ENV_DECODE:-}"
-# NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS = 容器内引擎初始化等待上限（权重加载慢）
+# NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS = 容器内引擎初始化的等待上限（秒），权重加载慢时调大；默认 3600
 NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS="${NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS:-3600}"
-# NATIVE_VLLM_EXTRA_ENV = 追加到两侧容器的环境变量（空格分隔的若干赋值）
+# NATIVE_VLLM_EXTRA_ENV = 追加到两侧容器的环境变量：空格分隔的 KEY=VALUE，如 VLLM_XXX=1；默认空
 NATIVE_VLLM_EXTRA_ENV="${NATIVE_VLLM_EXTRA_ENV:-}"
-# NATIVE_VLLM_SERVICE_NAME = 契约输出的服务名
-NATIVE_VLLM_SERVICE_NAME="${NATIVE_VLLM_SERVICE_NAME:-vllm-native}"
-# NATIVE_VLLM_READY_TIMEOUT_SECONDS = 单实例就绪（health 200）等待上限
+# NATIVE_VLLM_READY_TIMEOUT_SECONDS = 单实例就绪（/health 返回 200）的等待上限（秒）；默认 1800
 NATIVE_VLLM_READY_TIMEOUT_SECONDS="${NATIVE_VLLM_READY_TIMEOUT_SECONDS:-1800}"
+# LMCACHE_ENABLE = LMCache 选配开关（1=开启 0=关闭）；仅 PD 形态生效，LMCache 只接 prefill 角色
 LMCACHE_ENABLE="${LMCACHE_ENABLE:-0}"
+# LMCACHE_L1_SIZE_GB = LMCache L1（CPU 内存池）容量，单位 GiB（需宿主可用内存 ≥ 1.1 倍）
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-128}"
+# LMCACHE_OTLP_ENDPOINT = LMCache 指标/trace 的 OTLP 端点（留空=关闭观测；如 http://192.168.10.6:4320）
 LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.10.6:4320}"
 
 # ---- 内部常量与派生值（一律小写，避免被识别成入参）----
@@ -130,7 +127,7 @@ nerdctl_src="${hidden_nerdctl_src:-/usr/local/bin/nerdctl}"
 xccl_wheel_src="${hidden_xccl_wheel:-}"
 xccl_wheel_glob='/mnt/data/lichangsong/xccl-vllm-turbo/built/xccl_vllm_turbo-*.whl'
 # pip 源：默认国内镜像（阿里云），可用 NATIVE_VLLM_PIP_INDEX 或 PIP_INDEX_URL 覆盖
-pip_index="${hidden_pip_index:-${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}}"
+pip_index="${hidden_pip_index:-$(_p=PIP_INDEX_URL; printf '%s' "${!_p-https://mirrors.aliyun.com/pypi/simple}")}"
 pip_trusted_host="${pip_index#*://}"
 pip_trusted_host="${pip_trusted_host%%/*}"
 
@@ -176,6 +173,9 @@ lmcache_l1_init_size_gb="${hidden_lmcache_l1_init:-500}"
 lmcache_ready_timeout="${hidden_lmcache_ready_timeout:-600}"
 
 container_prefix='vllm-native'
+# ⚠️ 不能用 --shm-size（私有 /dev/shm）：LMCache server 在独立容器里，需要通过
+#    /dev/shm/cuda.shm.* 的 CUDA IPC 句柄 attach 引擎的 GPU KV cache，必须与引擎共享 /dev/shm，
+#    否则 register_kv_caches 永远等不到响应（300s 超时）。因此统一用 --ipc=host。
 runtime_bin='/usr/bin/nvidia-container-runtime'
 containerd_ns='k8s.io'
 work_dir="$native_run_dir"
@@ -187,10 +187,57 @@ target_pass=''
 image_ref=''
 mode='pd'
 model_name=''
-service_name="$NATIVE_VLLM_SERVICE_NAME"
+# 契约服务名固定用 arch 名（与平台下发的 MODEL_NAME 一致），不再单独配参数
+service_name=""
 arch_source='local'
 roles=()
 container_names=("${container_prefix}-prefill" "${container_prefix}-decode" "${container_prefix}-standalone" "${container_prefix}-lmcache")
+# 形态实例数（由 arch 名 <a>P<b>D 解析）；>1 时角色按 prefill / prefill-1 … decode / decode-1 展开
+p_inst=1
+d_inst=1
+gpu_prefill_inst=()
+gpu_decode_inst=()
+
+parse_instances_from_arch() {
+  local tok
+  tok="$(printf '%s' "$deploy_strategy" | grep -oE '[0-9]+P[0-9]+D' | tail -1)"
+  if [[ -n "$tok" ]]; then
+    p_inst="${tok%%P*}"
+    d_inst="${tok#*P}"
+    d_inst="${d_inst%D}"
+  fi
+  [[ -n "$p_inst" && "$p_inst" -ge 1 ]] 2>/dev/null || p_inst=1
+  [[ -n "$d_inst" && "$d_inst" -ge 1 ]] 2>/dev/null || d_inst=1
+}
+
+# 把 roles 按实例展开：prefill×2 → prefill prefill-1；同时重建 container_names
+expand_roles() {
+  local -a out=()
+  local role i n
+  for role in "${roles[@]}"; do
+    n=1
+    [[ "$role" == 'prefill' ]] && n="$p_inst"
+    [[ "$role" == 'decode' ]] && n="$d_inst"
+    if (( n == 1 )); then
+      out+=("$role")
+    else
+      for ((i = 1; i <= n; i++)); do out+=("${role}_$i"); done
+    fi
+  done
+  roles=("${out[@]}")
+  container_names=()
+  for role in "${roles[@]}"; do container_names+=("${container_prefix}-$role"); done
+  container_names+=("${container_prefix}-lmcache")
+}
+
+# 远端：从 role-facts.env 反推角色列表（含实例后缀），避免再传一份角色表
+roles_from_facts() {
+  local f="$1" role
+  roles=()
+  while IFS= read -r role; do
+    [[ -n "$role" ]] && roles+=("$role")
+  done < <(sed -nE 's/^role_need_([A-Za-z0-9_-]+)=.*/\1/p' "$f" 2>/dev/null)
+}
 # 本部署旧实例当前占用的端口（预检填充，供 port_check_and_fix 在清理前判定）
 declare -A ours_port=()
 script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -286,7 +333,9 @@ PY
   target_user="${picked_lines[2]:-root}"
   target_pass="${picked_lines[3]:-}"
   [[ -n "$target_ip" ]] || die "未能确定目标节点 IP" 2
-  [[ "$target_port" =~ ^[0-9]+$ ]] || target_port=''
+  case "$target_port" in
+    '' | *[!0-9]*) target_port='' ;;
+  esac
   [[ -z "$target_port" ]] || log "目标机 SSH 端口：$target_port（host:port 形式）"
 }
 
@@ -457,11 +506,14 @@ ASKPASS
 # 角色渲染：从策略里取该角色的 engine/env，覆盖本路线必需项后写出 config YAML 与 env
 render_role() {
   local arch_file="$stage_dir/model_arch.yaml"
-  local role="$1"
+  local role="$1" arch_role inst_idx=0
+  # prefill-1 → 策略里仍取 prefill 段，但产物按实例后缀命名
+  arch_role="${role%%_*}"
+  [[ "$role" == *_* ]] && inst_idx=$(( ${role##*_} - 1 ))
   [[ -f "$arch_file" ]] || die "缺少策略文件：$arch_file"
-  python3 - "$arch_file" "$deploy_strategy" "$role" "$stage_dir" "$MODEL_DIR" \
+  python3 - "$arch_file" "$deploy_strategy" "$arch_role" "$stage_dir" "$MODEL_DIR" \
     "$NATIVE_VLLM_AUTOTUNE" "$LMCACHE_ENABLE" "$lmcache_mp_port" "$http_keep_alive_seconds" \
-    "$NATIVE_VLLM_PROFILER" "$native_run_dir" <<'PY' \
+    "$NATIVE_VLLM_PROFILER" "$native_run_dir" "$role" <<'PY' \
     || die "$1 角色渲染失败"
 import json
 import shlex
@@ -476,12 +528,13 @@ import yaml
     out_dir,
     model_dir,
     autotune,
-    lmcache_enable,
+    LMCACHE_ENABLE,
     lmcache_mp_port,
     http_keep_alive_seconds,
     profiler_enable,
     run_dir,
-) = sys.argv[1:12]
+    out_role,
+) = sys.argv[1:13]
 
 with open(arch_file, encoding="utf-8") as handle:
     registry = yaml.safe_load(handle) or {}
@@ -519,7 +572,7 @@ kernel_config["enable_flashinfer_autotune"] = bool(int(autotune)) if role == "de
 config["kernel-config"] = kernel_config
 
 # 可选：prefill 的 PD 连接器外面再包一层 MultiConnector 接本地 LMCache
-if int(lmcache_enable) == 1 and role == "prefill":
+if int(LMCACHE_ENABLE) == 1 and role == "prefill":
     kv_config = config.get("kv-transfer-config")
     if not isinstance(kv_config, dict):
         raise SystemExit("LMCACHE_ENABLE=1 需要策略里存在 kv-transfer-config")
@@ -558,7 +611,7 @@ if int(profiler_enable) == 1:
         "max_iterations": 50,
     }
 
-with open(f"{out_dir}/config-{role}.yaml", "w", encoding="utf-8") as handle:
+with open(f"{out_dir}/config-{out_role}.yaml", "w", encoding="utf-8") as handle:
     yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
 
 
@@ -583,13 +636,13 @@ def to_cli_args(engine_config):
 
 
 cli_args = to_cli_args(config)
-with open(f"{out_dir}/args-{role}.sh", "w", encoding="utf-8") as handle:
+with open(f"{out_dir}/args-{out_role}.sh", "w", encoding="utf-8") as handle:
     handle.write("vllm_native_args=(\n")
     for item in cli_args:
         handle.write(f"  {shlex.quote(item)}\n")
     handle.write(")\n")
 
-with open(f"{out_dir}/env-{role}.sh", "w", encoding="utf-8") as handle:
+with open(f"{out_dir}/env-{out_role}.sh", "w", encoding="utf-8") as handle:
     # 先写本路线默认的 keep-alive，策略 env 与 NATIVE_VLLM_EXTRA_ENV 后写可覆盖
     handle.write(
         "export VLLM_HTTP_TIMEOUT_KEEP_ALIVE="
@@ -598,6 +651,23 @@ with open(f"{out_dir}/env-{role}.sh", "w", encoding="utf-8") as handle:
     for key, value in (section.get("env") or {}).items():
         handle.write(f"export {key}={shlex.quote(str(value))}\n")
 PY
+  # 实例 > 0（如 prefill-1）：端口与 Mooncake bootstrap 端口递增，避免同机冲突
+  if (( inst_idx > 0 )); then
+    python3 - "$stage_dir/config-$role.yaml" "$stage_dir/env-$role.sh" "$inst_idx" <<'PY' \
+      || die "$role 实例端口递增失败"
+import re
+import sys
+
+cfg, envf, idx = sys.argv[1], sys.argv[2], int(sys.argv[3])
+text = open(cfg, encoding="utf-8").read()
+text, n = re.subn(r"^port:\s*(\d+)$", lambda m: f"port: {int(m.group(1)) + idx}", text, count=1, flags=re.M)
+open(cfg, "w", encoding="utf-8").write(text)
+env = open(envf, encoding="utf-8").read()
+env = re.sub(r"(VLLM_MOONCAKE_BOOTSTRAP_PORT=)(\d+)", lambda m: m.group(1) + str(int(m.group(2)) + idx), env)
+open(envf, "w", encoding="utf-8").write(env)
+PY
+    log "  [$role] 实例 $inst_idx：端口与 Mooncake bootstrap 端口已递增（+$inst_idx）"
+  fi
 }
 
 role_port() {
@@ -631,11 +701,12 @@ write_entry_scripts() {
       printf 'if [[ -f "%s/args-override-%s.sh" ]]; then . "%s/args-override-%s.sh"; fi\n' \
         "$work_dir" "$role" "$work_dir" "$role"
       printf '# XCCL 插件（xccl-vllm-turbo）：仅当本次部署该侧启用时随产物安装\n'
-      printf 'if [[ -n "${VLLM_XCCL_TURBO_WHL:-}" && -f "$VLLM_XCCL_TURBO_WHL" ]]; then\n'
-      printf '  if python3 -m pip install --no-index --no-deps --disable-pip-version-check --quiet "$VLLM_XCCL_TURBO_WHL"; then\n'
-      printf '    echo "[entry] XCCL 插件已安装：$VLLM_XCCL_TURBO_WHL"\n'
+      printf 'x_whl=VLLM_XCCL_TURBO_WHL\n'
+      printf 'if [[ -n "${!x_whl-}" && -f "${!x_whl}" ]]; then\n'
+      printf '  if python3 -m pip install --no-index --no-deps --disable-pip-version-check --quiet "${!x_whl}"; then\n'
+      printf '    echo "[entry] XCCL 插件已安装：${!x_whl}"\n'
       printf '  else\n'
-      printf '    echo "[entry][warn] XCCL 插件安装失败：$VLLM_XCCL_TURBO_WHL"\n'
+      printf '    echo "[entry][warn] XCCL 插件安装失败：${!x_whl}"\n'
       printf '  fi\n'
       printf 'fi\n'
       printf 'exec vllm serve "${vllm_native_args[@]}"\n'
@@ -869,37 +940,32 @@ role_need() {
 # 带 -<n>G 但与结构算出来的不一致 → 直接失败（避免名字骗人）；
 # 没带后缀只 warn（向后兼容现有 arch 名）。
 check_topology_and_log() {
-  local arch="$deploy_strategy" role gpus need have used inst total=0 label
+  local arch="$deploy_strategy" role need inst total=0 label
   local -a parts=()
-  local p_inst=1 d_inst=1 name_cards='' rest
+  local p_inst=1 d_inst=1 name_cards='' tok
   # 取「最后一个」xPyD token（名字里若残留旧的形态 token，以最靠后的为准）
-  rest="$arch"
-  while [[ "$rest" =~ ([0-9]+)P([0-9]+)D ]]; do
-    p_inst="${BASH_REMATCH[1]}"
-    d_inst="${BASH_REMATCH[2]}"
-    rest="${rest#*"${BASH_REMATCH[0]}"}"
-  done
-  [[ "$arch" =~ -([0-9]+)G$ ]] && name_cards="${BASH_REMATCH[1]}"
-  for role in "${roles[@]}"; do
-    need="$(role_need "$role")"
-    [[ -n "$need" && "$need" -gt 0 ]] || die "role-facts.env 缺 $role 的卡数（渲染产物异常）" 2
-    if [[ "$role" == 'decode' ]]; then gpus="$NATIVE_VLLM_DECODE_GPUS"; else gpus="$NATIVE_VLLM_PREFILL_GPUS"; fi
-    have="$(printf '%s' "$gpus" | awk -F, '{print NF}')"
-    (( have >= need )) \
-      || die "$role 的 GPU 不足：按 arch 并行度（tp×pp×dp）需要 $need 张，实际只给了 $have 张（$gpus）" 2
-    (( have == need )) \
-      || warn "$role 给了 $have 张、只需 $need 张：多出的卡不参与部署（远端会按需截断）"
-    used="$gpus"
-    (( have == need )) || used="$(printf '%s' "$gpus" | cut -d, -f1-"$need")"
-    inst=1
-    [[ "$role" == 'decode' ]] && inst="$d_inst"
-    [[ "$mode" == 'pd' && "$role" == 'prefill' ]] && inst="$p_inst"
-    total=$(( total + need * inst ))
-    parts+=("$role×${inst}: 每实例 ${need} 卡 ← GPU $used")
-  done
-  if [[ "$mode" == 'pd' ]] && { [[ "$p_inst" != 1 ]] || [[ "$d_inst" != 1 ]]; }; then
-    die "arch 名声明了 ${p_inst}P${d_inst}D，但当前脚本只支持每角色单实例（1P1D）：多实例形态尚未实现" 2
+  tok="$(printf '%s' "$arch" | grep -oE '[0-9]+P[0-9]+D' | tail -1)"
+  if [[ -n "$tok" ]]; then
+    p_inst="${tok%%P*}"
+    d_inst="${tok#*P}"
+    d_inst="${d_inst%D}"
   fi
+  name_cards="$(printf '%s' "$arch" | sed -nE 's/.*-([0-9]+)G$/\1/p')"
+  local base_role
+  local -A seen_base=()
+  for role in "${roles[@]}"; do
+    # 每个「基础角色」只统计一次（实例数由 p_inst/d_inst 统一乘），避免实例角色重复计数
+    base_role="${role%%_*}"
+    [[ -n "${seen_base[$base_role]:-}" ]] && continue
+    seen_base[$base_role]=1
+    need="$(role_need "$(first_inst_role "$base_role")")"
+    [[ -n "$need" && "$need" -gt 0 ]] || die "role-facts.env 缺 $base_role 的卡数（渲染产物异常）" 2
+    inst=1
+    [[ "$base_role" == 'decode' ]] && inst="$d_inst"
+    [[ "$mode" == 'pd' && "$base_role" == 'prefill' ]] && inst="$p_inst"
+    total=$(( total + need * inst ))
+    parts+=("${base_role}×${inst}: 每实例 ${need} 卡")
+  done
   label="${p_inst}P${d_inst}D"
   [[ "$mode" == 'standalone' ]] && label='standalone'
   log "形态：${label}${name_cards:+-${name_cards}G}（$(printf '%s；' "${parts[@]}")共 ${total} 卡）"
@@ -964,70 +1030,55 @@ install_router_from_wheels() {
   return 1
 }
 
-# GPU 列表自动纠偏（直接改写全局 NATIVE_VLLM_*_GPUS，后续流程都用纠偏后的值）：
-#   ① 丢弃越界序号 ② 给多则截断到需求张数
-#   ③ pd：decode 与 prefill 重叠的项改派到本机空闲卡（保留 prefill 的原意）
-#   ④ 纠偏后仍不够张数则报错（不臆造卡）
-fix_gpu_lists() {
-  local need_prefill="$1" need_decode="$2" gpu_total="$3"
-  local -a pre=() dec=() pre_ok=() dec_ok=()
-  local id index changed=0
-  IFS=',' read -r -a pre <<<"$NATIVE_VLLM_PREFILL_GPUS"
-  IFS=',' read -r -a dec <<<"$NATIVE_VLLM_DECODE_GPUS"
-  for id in "${pre[@]}"; do
-    [[ -n "$id" ]] || continue
-    if (( id < gpu_total )); then pre_ok+=("$id"); else
-      changed=1; log "  [GPU 纠偏] prefill 丢弃越界序号 $id（本机 0..$((gpu_total - 1))）"
-    fi
+# 按 arch 的并行度推导 P/D 用卡（不再人工指定）：先排 prefill，再排 decode。
+# 依据 role-facts.env 的 role_need_<role>（= tp×pp×dp）：
+#   prefill 用 0 .. p-1；decode 用 p .. p+d-1
+derive_gpu_lists() {
+  local p_need="${1:-0}" d_need="${2:-0}" i k next=0
+  local -a g=()
+  gpu_prefill_inst=()
+  gpu_decode_inst=()
+  for ((i = 0; i < p_inst; i++)); do
+    g=()
+    for ((k = 0; k < p_need; k++)); do g+=("$((next + k))"); done
+    gpu_prefill_inst+=("$(IFS=,; printf '%s' "${g[*]}")")
+    next=$((next + p_need))
   done
-  for id in "${dec[@]}"; do
-    [[ -n "$id" ]] || continue
-    if (( id < gpu_total )); then dec_ok+=("$id"); else
-      changed=1; log "  [GPU 纠偏] decode 丢弃越界序号 $id（本机 0..$((gpu_total - 1))）"
-    fi
+  for ((i = 0; i < d_inst; i++)); do
+    g=()
+    for ((k = 0; k < d_need; k++)); do g+=("$((next + k))"); done
+    gpu_decode_inst+=("$(IFS=,; printf '%s' "${g[*]}")")
+    next=$((next + d_need))
   done
-  if (( ${#pre_ok[@]} > need_prefill )); then
-    pre_ok=("${pre_ok[@]:0:need_prefill}")
-    changed=1
-    log "  [GPU 纠偏] prefill 给多了，截断为 ${pre_ok[*]}（需 $need_prefill 张）"
-  fi
-  if (( need_decode > 0 && ${#dec_ok[@]} > need_decode )); then
-    dec_ok=("${dec_ok[@]:0:need_decode}")
-    changed=1
-    log "  [GPU 纠偏] decode 给多了，截断为 ${dec_ok[*]}（需 $need_decode 张）"
-  fi
-  if (( need_decode > 0 )); then
-    local -A used=()
-    for id in "${pre_ok[@]}"; do used["$id"]=1; done
-    local -a dec_new=()
-    for id in "${dec_ok[@]}"; do
-      if [[ -n "${used[$id]:-}" ]]; then dec_new+=('__OVERLAP__'); else dec_new+=("$id"); used["$id"]=1; fi
-    done
-    id=0
-    for index in "${!dec_new[@]}"; do
-      [[ "${dec_new[$index]}" == '__OVERLAP__' ]] || continue
-      while (( id < gpu_total )) && [[ -n "${used[$id]:-}" ]]; do id=$((id + 1)); done
-      (( id < gpu_total )) \
-        || die "GPU 不足：decode 与 prefill 有重叠且本机没有空闲卡可改派（需 $need_decode 张）" 1
-      dec_new[$index]="$id"
-      used["$id"]=1
-      changed=1
-      log "  [GPU 纠偏] decode 与 prefill 重叠项改派到空闲卡 $id"
-      id=$((id + 1))
-    done
-    dec_ok=("${dec_new[@]}")
-  fi
-  (( ${#pre_ok[@]} == need_prefill )) \
-    || die "prefill 可用 GPU 不足：需 $need_prefill 张，过滤越界后只剩 ${#pre_ok[@]} 张（请显式指定 NATIVE_VLLM_PREFILL_GPUS）" 1
-  (( ${#dec_ok[@]} == need_decode )) \
-    || die "decode 可用 GPU 不足：需 $need_decode 张，过滤重叠/越界后只剩 ${#dec_ok[@]} 张（请显式指定 NATIVE_VLLM_DECODE_GPUS）" 1
-  if (( changed )); then
-    NATIVE_VLLM_PREFILL_GPUS="$(IFS=,; printf '%s' "${pre_ok[*]}")"
-    if (( need_decode > 0 )); then
-      NATIVE_VLLM_DECODE_GPUS="$(IFS=,; printf '%s' "${dec_ok[*]}")"
-    fi
-    log "  [GPU 纠偏] 生效：prefill=$NATIVE_VLLM_PREFILL_GPUS decode=$NATIVE_VLLM_DECODE_GPUS"
-  fi
+  gpu_prefill="${gpu_prefill_inst[0]:-}"
+  gpu_decode="${gpu_decode_inst[0]:-}"
+  log "  按 arch 并行度推导用卡：prefill=[${gpu_prefill_inst[*]:-无}]（每实例 ${p_need} 张），decode=[${gpu_decode_inst[*]:-无}]（每实例 ${d_need} 张）"
+}
+
+# 取某角色的第一个实例角色名：多实例时基础角色不再单独存在（prefill → prefill_1）
+first_inst_role() {
+  case "$1" in
+    prefill) if (( p_inst > 1 )); then printf 'prefill_1'; else printf 'prefill'; fi ;;
+    decode) if (( d_inst > 1 )); then printf 'decode_1'; else printf 'decode'; fi ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# 取某角色的 Mooncake bootstrap 端口（从渲染出的 env 文件读；没有则输出空）
+role_bootstrap_port() {
+  local role="$1"
+  [[ -f "$stage_dir/env-$role.sh" ]] || return 0
+  sed -nE 's/^export VLLM_MOONCAKE_BOOTSTRAP_PORT=([0-9]+)$/\1/p' "$stage_dir/env-$role.sh" | head -1
+}
+
+# 取某角色（含实例后缀）应使用的卡列表
+gpu_list_for_role() {
+  local role="$1" idx=0
+  [[ "$role" == *_* ]] && idx=$(( ${role##*_} - 1 ))
+  case "${role%%_*}" in
+    decode) printf '%s' "${gpu_decode_inst[$idx]:-}" ;;
+    *) printf '%s' "${gpu_prefill_inst[$idx]:-}" ;;
+  esac
 }
 
 # 端口占用处理：pre=清理前（本部署旧实例占用只提示，等清理回收）；post=清理后（任何占用都算外部）。
@@ -1038,7 +1089,7 @@ port_check_and_fix() {
   local phase="$1" port line owner newport role pvar
   local -a ports=() rlist=()
   local -A role_of=() ours=()
-  if [[ "$mode" == 'pd' ]]; then rlist=(prefill decode); else rlist=(standalone); fi
+  rlist=("${roles[@]}")
   for role in "${rlist[@]}"; do
     pvar="role_port_$role"
     port="${!pvar:-}"
@@ -1091,10 +1142,9 @@ port_check_and_fix() {
 remote_precheck() {
   local role entry needed gpus have gpu_total id st port line
   local primary_role='prefill'
-  local all_gpus="$NATIVE_VLLM_PREFILL_GPUS"
+  local all_gpus=''
   local -A role_port_map=()
   [[ "$mode" == 'standalone' ]] && primary_role='standalone'
-  [[ "$mode" == 'pd' ]] && all_gpus="$all_gpus,$NATIVE_VLLM_DECODE_GPUS"
   log "环境预检：目标机 $target_ip（工作目录 $work_dir）"
 
   # ---- 1) 运行时与本地制品 ----
@@ -1156,8 +1206,7 @@ remote_precheck() {
   fi
 
   # ---- 3) GPU：按渲染产物核对数量（tp×pp×dp），并自动纠偏越界/给多/重叠 ----
-  local -a role_list=()
-  if [[ "$mode" == 'pd' ]]; then role_list=(prefill decode); else role_list=("$primary_role"); fi
+  local -a role_list=("${roles[@]}")
   local need_prefill='' need_decode='0' nv pv
   for role in "${role_list[@]}"; do
     nv="role_need_$role"
@@ -1166,14 +1215,18 @@ remote_precheck() {
     port="${!pv:-}"
     [[ -n "$needed" && "$needed" -gt 0 ]] \
       || die "渲染产物里 $role 缺少并行度信息（role-facts.env 不完整）" 1
-    if [[ "$role" == 'decode' ]]; then need_decode="$needed"; else need_prefill="$needed"; fi
+    if [[ "${role%%_*}" == 'decode' ]]; then need_decode="$needed"; else need_prefill="$needed"; fi
     [[ "$port" == '0' || -z "$port" ]] || role_port_map["$role"]="$port"
   done
   gpu_total="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)"
   (( gpu_total > 0 )) || die "目标机 nvidia-smi 看不到 GPU" 1
-  fix_gpu_lists "$need_prefill" "$need_decode" "$gpu_total"
-  all_gpus="$NATIVE_VLLM_PREFILL_GPUS"
-  [[ "$mode" == 'pd' ]] && all_gpus="$all_gpus,$NATIVE_VLLM_DECODE_GPUS"
+  # 卡数校验：arch 推导出的总卡数不能超过本机可用卡（当前仅适配单节点）
+  local need_total=$(( p_inst * need_prefill + d_inst * need_decode ))
+  (( need_total <= gpu_total )) \
+    || die "卡数不足：arch 需要 prefill ${need_prefill}×${p_inst} + decode ${need_decode}×${d_inst} = ${need_total} 张，目标机只有 ${gpu_total} 张（当前仅适配单节点，超出的部分无法调度）" 1
+  derive_gpu_lists "$need_prefill" "$need_decode"
+  all_gpus="$gpu_prefill"
+  [[ "$mode" == 'pd' ]] && all_gpus="$all_gpus,$gpu_decode"
   # 本部署旧实例状态（一次取全）：决定"端口/显存/内存被占"是该拦还是该等信息
   local ps_dump old_running=0 old_lmcache_up=0 name
   ps_dump="$(nerdctl -n "$containerd_ns" ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null || true)"
@@ -1252,6 +1305,13 @@ remote_clean() {
       nerdctl -n "$containerd_ns" rm -f "$name" >/dev/null 2>&1
     fi
   done
+  # 清理陈旧的 CUDA IPC 共享内存文件（>3 天，避免残留锁影响新实例；不动正在用的）
+  local stale
+  stale="$(find /dev/shm -maxdepth 1 -name 'cuda.shm.*' -mtime +3 2>/dev/null | wc -l)"
+  if (( stale > 0 )); then
+    find /dev/shm -maxdepth 1 -name 'cuda.shm.*' -mtime +3 -delete 2>/dev/null || true
+    log "清理陈旧 CUDA IPC 共享内存文件 ${stale} 个（>3 天）"
+  fi
   # 停掉上一轮的日志泵（否则新旧两轮会重复写同一批容器日志）
   pkill -f "nerdctl -n ${containerd_ns} logs -f ${container_prefix}" 2>/dev/null || true
   pids="$(pgrep -f 'vllm::router' 2>/dev/null || true)"
@@ -1330,14 +1390,13 @@ remote_run_container() {
 
 # 并行等待多个实例就绪：任一容器退出立即失败，全部 health=200 才返回 0
 remote_wait_instances() {
-  local -a names=("${container_prefix}-$primary_role")
-  local -a ports=("$primary_port")
-  local -a ready=(0)
-  if [[ "$mode" == 'pd' ]]; then
-    names+=("${container_prefix}-decode")
-    ports+=("$decode_port")
+  local -a names=() ports=() ready=()
+  local role
+  for role in "${roles[@]}"; do
+    names+=("${container_prefix}-$role")
+    ports+=("$(role_port "$role")")
     ready+=(0)
-  fi
+  done
   local start=$SECONDS deadline=$((SECONDS + NATIVE_VLLM_READY_TIMEOUT_SECONDS))
   local index code status pending
   while (( SECONDS < deadline )); do
@@ -1380,8 +1439,8 @@ remote_start_lmcache() {
   fi
   nerdctl -n "$containerd_ns" run -d --name "$name" --network host \
     --runtime "$runtime_bin" --ipc=host \
-    -e "NVIDIA_VISIBLE_DEVICES=$NATIVE_VLLM_PREFILL_GPUS" \
-    -e "CUDA_VISIBLE_DEVICES=$NATIVE_VLLM_PREFILL_GPUS" \
+    -e "NVIDIA_VISIBLE_DEVICES=$gpu_prefill" \
+    -e "CUDA_VISIBLE_DEVICES=$gpu_prefill" \
     --entrypoint /bin/bash "$image_ref" \
     -c "exec lmcache server --host 0.0.0.0 --port $lmcache_mp_port --http-port $lmcache_http_port \
         --l1-size-gb $LMCACHE_L1_SIZE_GB --l1-init-size-gb $lmcache_l1_init_size_gb \
@@ -1482,7 +1541,7 @@ remote_setup_port_forward() {
 }
 
 remote_start_router() {
-  local prefill_port="$1" decode_port="$2" waited=0 code
+  local decode_port="$1" waited=0 code
   # ⚠️ 注释不能插在 nohup 的续行（\）中间——注释会终止续行，导致后面的参数被当成独立命令。
   # 引擎与 router 同机，必须用回环地址：target_ip 可能是外网映射入口（如 hd2 的 EIP），
   # 节点访问自己的 EIP 一般没有 hairpin，会让 router 卡在探测引擎上（表现为不监听对外端口）。
@@ -1491,7 +1550,7 @@ remote_start_router() {
     --policy "$router_policy" \
     --vllm-pd-disaggregation \
     --kv-connector "$router_kv_connector" \
-    --prefill "http://127.0.0.1:$prefill_port" \
+    --prefill "${router_prefill_args[@]}" \
     --decode "http://127.0.0.1:$decode_port" \
     --host 0.0.0.0 --port "$router_port" \
     --intra-node-data-parallel-size 1 \
@@ -1562,10 +1621,11 @@ PY
 remote_main() {
   stage_dir="$work_dir"
   image_ref="$NATIVE_VLLM_IMAGE"
-  service_name="$NATIVE_VLLM_SERVICE_NAME"
   mode="${platform_native_mode:-pd}"
   target_ip="${platform_native_target_ip:-}"
   model_name="${platform_model_name:-}"
+  # 契约服务名 = arch 名
+  service_name="${model_name:-${deploy_strategy:-vllm-native}}"
   arch_source="${platform_native_arch_source:-remote}"
   log "远端阶段开始：目标机 $target_ip，工作目录 $work_dir"
   init_log_dir
@@ -1576,6 +1636,11 @@ remote_main() {
     || die "远端缺少 role-facts.env（父阶段未生成：请更新 step 脚本后重跑）" 2
   # shellcheck disable=SC1090
   . "$work_dir/role-facts.env"
+  # 卡号一律由 arch 并行度推导（先排 prefill 再排 decode）；预检会再用本机实际卡数校一次，
+  # 这里先算一遍，保证即使跳过预检后续流程也有值
+  parse_instances_from_arch
+  roles_from_facts "$work_dir/role-facts.env"
+  derive_gpu_lists "$(role_need "$(first_inst_role prefill)")" "$(role_need "$(first_inst_role decode)")"
   command -v nerdctl >/dev/null 2>&1 || {
     # 目标机缺 nerdctl：若产物里带了执行机的静态二进制就就地补装（gy1-2/hd2 多台节点如此）
     if [[ -x "$work_dir/nerdctl" ]]; then
@@ -1601,40 +1666,27 @@ remote_main() {
   # 清理后再核一遍端口：此时旧实例已退，任何占用都是外部的 → 该纠偏就纠偏、该报错就报错
   port_check_and_fix post
 
-  local primary_role='prefill' primary_port='' decode_port='' health_rc=0
-  [[ "$mode" == 'standalone' ]] && primary_role='standalone'
-
+  local role gpu_list decode_port='' health_rc=0
+  # LMCache：单机只起一个 MP server，本机所有 prefill 实例共用它
   if [[ "$LMCACHE_ENABLE" == '1' && "$mode" == 'pd' ]]; then
-    remote_wait_gpu_free "$NATIVE_VLLM_PREFILL_GPUS"
+    remote_wait_gpu_free "$gpu_prefill"
     remote_start_lmcache || return 1
   elif [[ "$LMCACHE_ENABLE" == '1' ]]; then
     warn "standalone 形态下 LMCACHE_ENABLE=1 不生效（LMCache 只接 prefill 角色）"
   fi
 
-  # 等卡空闲（一次性判断，避免两个角色串行等待），然后两侧并行启动、并行等待
-  remote_wait_gpu_free "$NATIVE_VLLM_PREFILL_GPUS"
-  [[ "$mode" == 'pd' ]] && remote_wait_gpu_free "$NATIVE_VLLM_DECODE_GPUS"
-
-  log "启动 $primary_role 容器（GPU $NATIVE_VLLM_PREFILL_GPUS）"
-  remote_run_container "${container_prefix}-$primary_role" "$NATIVE_VLLM_PREFILL_GPUS" \
-    "entry-$primary_role.sh" >/dev/null || return 1
-  local pvar pport
-  pvar="role_port_$primary_role"
-  primary_port="${!pvar:-}"
-  [[ -n "$primary_port" && "$primary_port" != '0' ]] \
-    || die "渲染产物里 $primary_role 缺少端口（role-facts.env）" 1
-
-  if [[ "$mode" == 'pd' ]]; then
-    log "启动 decode 容器（GPU $NATIVE_VLLM_DECODE_GPUS）"
-    remote_run_container "${container_prefix}-decode" "$NATIVE_VLLM_DECODE_GPUS" \
-      "entry-decode.sh" >/dev/null || return 1
-    pvar='role_port_decode'
-    decode_port="${!pvar:-}"
-    [[ -n "$decode_port" && "$decode_port" != '0' ]] \
-      || die "渲染产物里 decode 缺少端口（role-facts.env）" 1
-  fi
-
-  log "两侧容器已并行启动，等待就绪（上限 ${NATIVE_VLLM_READY_TIMEOUT_SECONDS}s）"
+  # 先一次性等各实例的卡空闲，再并行启动全部实例（prefill / prefill-1 / decode …）
+  for role in "${roles[@]}"; do
+    gpu_list="$(gpu_list_for_role "$role")"
+    [[ -n "$gpu_list" ]] || die "无法为 $role 分配 GPU（按 arch 推导失败）" 1
+    remote_wait_gpu_free "$gpu_list"
+  done
+  for role in "${roles[@]}"; do
+    gpu_list="$(gpu_list_for_role "$role")"
+    log "启动 $role 容器（GPU $gpu_list，端口 $(role_port "$role")）"
+    remote_run_container "${container_prefix}-$role" "$gpu_list" "entry-$role.sh" >/dev/null || return 1
+  done
+  log "全部容器已并行启动（${#roles[@]} 个），等待就绪（上限 ${NATIVE_VLLM_READY_TIMEOUT_SECONDS}s）"
   remote_wait_instances || health_rc=1
   if (( health_rc != 0 )); then
     warn "实例未全部就绪；容器保留供排障：nerdctl -n $containerd_ns logs <容器名>"
@@ -1642,7 +1694,20 @@ remote_main() {
   fi
 
   if [[ "$mode" == 'pd' ]]; then
-    remote_start_router "$primary_port" "$decode_port" || return 1
+    decode_port="$(role_port decode)"
+    [[ -n "$decode_port" && "$decode_port" != '0' ]] \
+      || die "渲染产物里 decode 缺少端口（role-facts.env）" 1
+    router_prefill_args=()
+    local rport bport
+    for role in "${roles[@]}"; do
+      [[ "$role" == prefill* ]] || continue
+      rport="$(role_port "$role")"
+      router_prefill_args+=("http://127.0.0.1:$rport")
+      bport="$(role_bootstrap_port "$role")"
+      [[ -n "$bport" ]] && router_prefill_args+=("$bport")
+    done
+    log "router prefill 列表：${router_prefill_args[*]}"
+    remote_start_router "$decode_port" || return 1
     # 自动端口转发：对外暴露端口 → router（表里没有的节点会自动跳过）
     # 这里要自己算小网 IP：下面的 service_ip 是 local，在本调用之后才声明
     local svc_ip=''
@@ -1670,12 +1735,16 @@ remote_main() {
   [[ -n "$service_ip" ]] || service_ip="$target_ip"
   log "契约地址使用目标机小网 IP：$service_ip（平台 target=$target_ip）"
 
+  local primary_port
   if [[ "$mode" == 'pd' ]]; then
+    primary_port="$(role_port "$(first_inst_role prefill)")"
     printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$service_ip" "$router_port"
     printf 'SERVICE_API=http://%s:%s\n' "$service_ip" "$router_port"
     printf 'NATIVE_VLLM_PREFILL_PORT=%s\n' "$primary_port"
     printf 'NATIVE_VLLM_DECODE_PORT=%s\n' "$decode_port"
   else
+    primary_port="$(role_port standalone)"
+    [[ -n "$primary_port" && "$primary_port" != '0' ]] || primary_port="$router_port"
     printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$service_ip" "$primary_port"
     printf 'SERVICE_API=http://%s:%s\n' "$service_ip" "$primary_port"
     printf 'NATIVE_VLLM_STANDALONE_PORT=%s\n' "$primary_port"
@@ -1754,11 +1823,15 @@ PY
   [[ "$NATIVE_VLLM_PROFILER" == '1' ]] && log "Profiler：开启（torch，落盘 $native_run_dir/profiles；POST /start_profile 起、/stop_profile 停，delay 5 步、最多 50 步）"
   log "autotune：decode=${NATIVE_VLLM_AUTOTUNE}（仅 decode 生效），prefill/standalone=强制关闭（PP+autotune 会跨 rank 死锁）"
 
+  parse_instances_from_arch
+  expand_roles
   local role
   for role in "${roles[@]}"; do
     render_role "$role"
   done
   write_role_facts
+  # 卡号由 arch 并行度自动推导（先排 prefill 再排 decode）；远端预检会再用目标机实际卡数校一次
+  derive_gpu_lists "$(role_need "$(first_inst_role prefill)")" "$(role_need "$(first_inst_role decode)")"
   check_topology_and_log
 
   # 策略 env 之外，本路线固定追加的运行期环境变量
@@ -1813,9 +1886,9 @@ PY
     log "  镜像 $image_ref；目标机 $target_ip（user=$target_user）；工作目录 $work_dir"
     for role in "${roles[@]}"; do
       if [[ "$role" == 'decode' ]]; then
-        log "  [$role] GPU=$NATIVE_VLLM_DECODE_GPUS 端口=$(role_port "$role")"
+        log "  [$role] GPU=$gpu_decode 端口=$(role_port "$role")"
       else
-        log "  [$role] GPU=$NATIVE_VLLM_PREFILL_GPUS 端口=$(role_port "$role")"
+        log "  [$role] GPU=$gpu_prefill 端口=$(role_port "$role")"
       fi
       printf '\n---- config-%s.yaml ----\n' "$role"
       cat "$stage_dir/config-$role.yaml"
@@ -1845,8 +1918,6 @@ PY
     "NATIVE_VLLM_RUN_DIR=$work_dir"
     "NATIVE_VLLM_MODE=$mode"
     "NATIVE_VLLM_ARCH_SOURCE=$arch_source"
-    "NATIVE_VLLM_PREFILL_GPUS=$NATIVE_VLLM_PREFILL_GPUS"
-    "NATIVE_VLLM_DECODE_GPUS=$NATIVE_VLLM_DECODE_GPUS"
     "NATIVE_VLLM_ROUTER_PORT=$router_port"
     "NATIVE_VLLM_ROUTER_BIN=$router_bin"
     "NATIVE_VLLM_ROUTER_POLICY=$router_policy"
@@ -1855,7 +1926,6 @@ PY
     "NATIVE_VLLM_READY_TIMEOUT_SECONDS=$NATIVE_VLLM_READY_TIMEOUT_SECONDS"
     "NATIVE_VLLM_VERIFY=$verify_after"
     "NATIVE_VLLM_CLEAN=$clean_old"
-    "NATIVE_VLLM_SERVICE_NAME=$service_name"
     "LMCACHE_ENABLE=$LMCACHE_ENABLE"
     "LMCACHE_L1_SIZE_GB=$LMCACHE_L1_SIZE_GB"
     "LMCACHE_L1_INIT_SIZE_GB=$lmcache_l1_init_size_gb"
