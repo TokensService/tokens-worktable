@@ -25,7 +25,7 @@ usage() {
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
-  BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
+  BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE；默认 torch_cuda_arch_list=（按当前 GPU 架构构建）
   BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
@@ -88,7 +88,7 @@ BUILD_NVCC_THREADS_WAS_SET="${BUILD_NVCC_THREADS+x}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
 BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
 BUILD_CPUS="${BUILD_CPUS:-}"
-BUILD_ARGS="${BUILD_ARGS:-}"
+BUILD_ARGS="${BUILD_ARGS:-torch_cuda_arch_list=}"
 BUILD_ENGINE="${BUILD_ENGINE:-indocker}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
