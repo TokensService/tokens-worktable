@@ -141,6 +141,16 @@ if [[ -z "${HTTP_PROXY:-${http_proxy:-}}" ]] && command -v ss >/dev/null 2>&1 \
   info_proxy_detected=true
 fi
 
+# apt 的 Release/InRelease 签名不能经过当前本机代理；宿主机可直连这些源时，
+# 将其加入 NO_PROXY，避免代理返回被改写或过期的元数据。
+BUILD_DIRECT_DOWNLOAD_HOSTS="${BUILD_DIRECT_DOWNLOAD_HOSTS:-archive.ubuntu.com,security.ubuntu.com,ppa.launchpadcontent.net,developer.download.nvidia.com}"
+if [[ -n "$BUILD_DIRECT_DOWNLOAD_HOSTS" ]]; then
+  NO_PROXY="${NO_PROXY:-${no_proxy:-}}"
+  NO_PROXY="${NO_PROXY:+$NO_PROXY,}$BUILD_DIRECT_DOWNLOAD_HOSTS"
+  export NO_PROXY
+  export no_proxy="$NO_PROXY"
+fi
+
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
 
