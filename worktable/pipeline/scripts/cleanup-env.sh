@@ -286,11 +286,19 @@ cleanup_current_release_resources() {
     probe_k8s
     [[ "$HAS_KUBECTL" == "1" ]] || { log "ERROR: kubectl 不可用，不能删除本次 Service"; return 1; }
     log "=== 清理本次发布资源 namespace=$CLEANUP_NAMESPACE service=$CLEANUP_SERVICE_NAME nodePort=$CLEANUP_NODE_PORT ==="
-    if [[ "$DRY_RUN" == "1" ]]; then
-        log "  [DRY_RUN] kubectl delete service $CLEANUP_SERVICE_NAME -n $CLEANUP_NAMESPACE --ignore-not-found --wait=true"
-    else
-        kubectl delete service "$CLEANUP_SERVICE_NAME" -n "$CLEANUP_NAMESPACE" --ignore-not-found --wait=true || return 1
+    local -a services=()
+    mapfile -t services < <(kubectl get service -n "$CLEANUP_NAMESPACE" -o name 2>/dev/null || true)
+    if ((${#services[@]} == 0)); then
+        services=("service/$CLEANUP_SERVICE_NAME")
     fi
+    for service in "${services[@]}"; do
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  [DRY_RUN] kubectl delete $service -n $CLEANUP_NAMESPACE --ignore-not-found --wait=true"
+        else
+            log "  删除发布命名空间 Service: $CLEANUP_NAMESPACE/$service"
+            kubectl delete "$service" -n "$CLEANUP_NAMESPACE" --ignore-not-found --wait=true || return 1
+        fi
+    done
     terminate_port_listener "$CLEANUP_NODE_PORT"
 }
 
