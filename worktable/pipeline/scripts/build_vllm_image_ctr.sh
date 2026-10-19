@@ -23,7 +23,7 @@ usage() {
   BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
-  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
+  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 1（降低 CUDA 编译峰值内存）
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE；默认 torch_cuda_arch_list=（按当前 GPU 架构构建）
   BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
@@ -86,7 +86,7 @@ BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
 BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
 BUILD_NVCC_THREADS_WAS_SET="${BUILD_NVCC_THREADS+x}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
-BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
+BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-1}"
 BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-torch_cuda_arch_list=}"
 BUILD_ENGINE="${BUILD_ENGINE:-indocker}"
