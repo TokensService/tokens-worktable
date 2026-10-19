@@ -362,9 +362,9 @@ apply_flashinfer_wheelhouse_rewrite() {
       indent = $0
       sub(/[^[:space:]].*$/, "", indent)
       if ($0 ~ /\\[[:space:]]*$/) {
-        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl;"
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl; \\"
       } else {
-        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl;"
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl; \\"
       }
       rewrote_install = 1
       if ($0 ~ /flashinfer\.ai/) index_on_line = 1
