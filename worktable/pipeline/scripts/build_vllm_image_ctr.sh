@@ -46,6 +46,12 @@ usage() {
   BUILD_CACHE         是否启用本地层缓存，默认 true
   BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 shared
   UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
+  FLASHINFER_PREDOWNLOAD  预下载 flashinfer-jit-cache wheel 并改写 Dockerfile 为本地
+                          wheelhouse 安装，默认 true；false 保留构建内远程安装
+  FLASHINFER_WHEELHOUSE_DIR wheelhouse 目录，默认 /tmp/flashinfer-wheelhouse；
+                          已存在同版本完整 wheel 时跳过下载直接复用
+  FLASHINFER_WHL_INDEX    预下载使用的 wheel 索引，默认按 Dockerfile 的 CUDA_VERSION
+                          推导 https://flashinfer.ai/whl/cu<XX>
 EOF
 }
 
@@ -117,6 +123,12 @@ BUILD_CACHE="${BUILD_CACHE:-true}"
 # runtime/base 阶段重复下载；uv 自身会对缓存文件加锁。
 BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-shared}"
 UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+# flashinfer-jit-cache wheel 约 1GB，构建内从 flashinfer.ai 拉取经常长时间无输出
+# 甚至卡死。默认先在执行机预下载到 wheelhouse，构建时经附加构建上下文
+# flashinfer-wheelhouse 注入 COPY --from，改为本地安装（wheel 会进入镜像层）。
+FLASHINFER_PREDOWNLOAD="${FLASHINFER_PREDOWNLOAD:-true}"
+FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-/tmp/flashinfer-wheelhouse}"
+FLASHINFER_WHL_INDEX="${FLASHINFER_WHL_INDEX:-}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
 # 仅在明确发现 127.0.0.1:8118 正在监听时自动启用，避免改变无代理环境。
@@ -177,7 +189,8 @@ run_remote_build() {
       IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
       BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING HTTP_PROXY HTTPS_PROXY \
       NO_PROXY http_proxy https_proxy no_proxy UV_INDEX_URL UV_EXTRA_INDEX_URL \
-      PIP_INDEX_URL PIP_EXTRA_INDEX_URL; do
+      PIP_INDEX_URL PIP_EXTRA_INDEX_URL FLASHINFER_PREDOWNLOAD \
+      FLASHINFER_WHEELHOUSE_DIR FLASHINFER_WHL_INDEX; do
       if [[ -v "$env_name" ]]; then
         env_value="${!env_name}"
         if [[ "$env_name" == HTTP_PROXY || "$env_name" == HTTPS_PROXY ||
@@ -241,6 +254,123 @@ ensure_source() {
     mkdir -p "$(dirname "$VLLM_SOURCE_DIR")"
     git clone --depth 1 --branch "$VLLM_REF" "$VLLM_REPO_URL" "$VLLM_SOURCE_DIR"
   fi
+}
+
+# 解析 Dockerfile 中 flashinfer-jit-cache 的安装版本与预下载索引。
+# 输出两行：wheel 版本、索引 URL；Dockerfile 不含该安装步骤或无法推导索引时返回 1。
+# BUILD_ARGS 中的 FLASHINFER_VERSION / CUDA_VERSION 显式覆盖优先（与 --build-arg 一致）。
+parse_flashinfer_install() {
+  local dockerfile="$1" version cuda cu_tag override index
+  [[ -f "$dockerfile" ]] || return 1
+  grep -q -- 'flashinfer-jit-cache==' "$dockerfile" || return 1
+  version="$(sed -nE 's/^[[:space:]]*ARG[[:space:]]+FLASHINFER_VERSION=([^[:space:]]+).*/\1/p' "$dockerfile" | head -n 1)"
+  override="$(printf '%s\n' "$BUILD_ARGS" | sed -nE 's/^[[:space:]]*FLASHINFER_VERSION=(.+)$/\1/p' | tail -n 1)"
+  [[ -n "$override" ]] && version="$override"
+  [[ -n "$version" ]] || return 1
+  if [[ -n "$FLASHINFER_WHL_INDEX" ]]; then
+    index="$FLASHINFER_WHL_INDEX"
+  else
+    cuda="$(sed -nE 's/^[[:space:]]*ARG[[:space:]]+CUDA_VERSION=([^[:space:]]+).*/\1/p' "$dockerfile" | head -n 1)"
+    override="$(printf '%s\n' "$BUILD_ARGS" | sed -nE 's/^[[:space:]]*CUDA_VERSION=(.+)$/\1/p' | tail -n 1)"
+    [[ -n "$override" ]] && cuda="$override"
+    cu_tag="$(printf '%s' "$cuda" | cut -d. -f1,2 | tr -d '[:space:].')"
+    [[ "$cu_tag" =~ ^[0-9]+$ ]] || return 1
+    index="https://flashinfer.ai/whl/cu${cu_tag}"
+  fi
+  printf '%s\n%s\n' "$version" "$index"
+}
+
+# 校验 wheel 是完整 zip（识别被截断的残留下载）。缺少 python3 时跳过校验。
+validate_wheel_zip() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$1" 2>/dev/null <<'PY'
+import sys, zipfile
+try:
+    zipfile.ZipFile(sys.argv[1]).close()
+except Exception:
+    sys.exit(1)
+PY
+}
+
+# 预下载 flashinfer-jit-cache wheel 到 wheelhouse；已存在同版本完整 wheel 时直接复用。
+prepare_flashinfer_wheelhouse() {
+  local version="$1" index="$2" wheel
+  local -a wheels=()
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  for wheel in "${wheels[@]}"; do
+    if [[ ! -s "$wheel" ]] || ! validate_wheel_zip "$wheel"; then
+      info "删除不完整的 wheel: $(basename "$wheel")"
+      rm -f "$wheel"
+    fi
+  done
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  if ((${#wheels[@]} == 1)); then
+    info "flashinfer wheelhouse 已就绪: ${wheels[0]}"
+    return 0
+  elif ((${#wheels[@]} > 1)); then
+    die "wheelhouse 中存在多个同版本 wheel，请清理 $FLASHINFER_WHEELHOUSE_DIR"
+  fi
+  mkdir -p "$FLASHINFER_WHEELHOUSE_DIR"
+  info "预下载 flashinfer-jit-cache==${version}（索引 ${index}）"
+  command -v python3 >/dev/null 2>&1 || die "缺少 python3，无法预下载 flashinfer wheel"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip download --no-deps \
+      --index-url "$index" --dest "$FLASHINFER_WHEELHOUSE_DIR" \
+      "flashinfer-jit-cache==${version}"
+  else
+    python3 -m pip --version >/dev/null 2>&1 || die "缺少 pip，无法预下载 flashinfer wheel"
+    python3 -m pip download --disable-pip-version-check --break-system-packages --no-deps \
+      --index-url "$index" --dest "$FLASHINFER_WHEELHOUSE_DIR" \
+      "flashinfer-jit-cache==${version}"
+  fi || die "flashinfer wheel 预下载失败；可把 wheel 手工放入 $FLASHINFER_WHEELHOUSE_DIR，或设 FLASHINFER_PREDOWNLOAD=false 回退构建内远程安装"
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  ((${#wheels[@]} == 1)) || die "pip download 后未找到唯一 wheel: flashinfer_jit_cache-${version}*.whl"
+  validate_wheel_zip "${wheels[0]}" || die "下载的 wheel 校验失败: ${wheels[0]}"
+  info "flashinfer wheel 预下载完成: $(basename "${wheels[0]}")"
+}
+
+# 把 Dockerfile 中 flashinfer-jit-cache 的远程安装改写为本地 wheelhouse 安装：
+# 在 ARG FLASHINFER_VERSION 后插入 COPY --from=flashinfer-wheelhouse，并把
+# uv pip install ... --index-url https://flashinfer.ai/... 替换为安装本地 wheel。
+# 安装步骤形态与预期不符时返回 3，调用方保留原 Dockerfile（远程安装）。
+apply_flashinfer_wheelhouse_rewrite() {
+  local src="$1" dst="$2"
+  awk '
+    /^[[:space:]]*ARG[[:space:]]+FLASHINFER_VERSION=/ {
+      print
+      print "COPY --from=flashinfer-wheelhouse / /opt/flashinfer-wheelhouse"
+      inserted_copy = 1
+      next
+    }
+    /uv pip install --system flashinfer-jit-cache==/ {
+      indent = $0
+      sub(/[^[:space:]].*$/, "", indent)
+      if ($0 ~ /\\[[:space:]]*$/) {
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl;"
+      } else {
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl;"
+      }
+      rewrote_install = 1
+      if ($0 ~ /flashinfer\.ai/) index_on_line = 1
+      expect_index = 1
+      next
+    }
+    expect_index && /flashinfer\.ai/ {
+      expect_index = 0
+      dropped_index = 1
+      next
+    }
+    { expect_index = 0; print }
+    END {
+      if (!inserted_copy || !rewrote_install || !(dropped_index || index_on_line)) exit 3
+    }
+  ' "$src" >"$dst"
 }
 
 ensure_buildx_builder() {
@@ -413,6 +543,8 @@ if [[ "$BUILD_CACHE" == true ]]; then
 elif [[ "$BUILD_CACHE" != false ]]; then
   die "BUILD_CACHE 必须是 true 或 false: $BUILD_CACHE"
 fi
+[[ "$FLASHINFER_PREDOWNLOAD" == true || "$FLASHINFER_PREDOWNLOAD" == false ]] \
+  || die "FLASHINFER_PREDOWNLOAD 必须是 true 或 false: $FLASHINFER_PREDOWNLOAD"
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
 if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == auto ]]; then
@@ -463,6 +595,46 @@ if [[ "$DRY_RUN" != true ]]; then
   [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
   mkdir -p "$BUILD_OUTPUT_DIR"
 fi
+
+# --- FlashInfer JIT cache wheelhouse：预下载 wheel，构建内改为本地安装 ---
+flashinfer_wheelhouse_ready=false
+flashinfer_version=""
+flashinfer_index=""
+if [[ "$FLASHINFER_PREDOWNLOAD" == true ]]; then
+  flashinfer_engine_ok=false
+  case "$BUILD_ENGINE" in
+    docker-buildx|nerdctl|buildctl) flashinfer_engine_ok=true ;;
+    docker)
+      if command -v docker >/dev/null 2>&1 && docker build --help 2>&1 | grep -Fq -- '--build-context'; then
+        flashinfer_engine_ok=true
+      else
+        info "警告：docker build 不支持 --build-context，flashinfer wheelhouse 未启用"
+      fi
+      ;;
+    indocker) info "警告：indocker 构建器不支持 flashinfer wheelhouse，保留构建内远程安装" ;;
+    *) ;;
+  esac
+  flashinfer_parse=""
+  if [[ "$flashinfer_engine_ok" == true && -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]]; then
+    flashinfer_parse="$(parse_flashinfer_install "$VLLM_SOURCE_DIR/$DOCKERFILE" || true)"
+  fi
+  if [[ -n "$flashinfer_parse" ]]; then
+    flashinfer_version="${flashinfer_parse%%$'\n'*}"
+    flashinfer_index="${flashinfer_parse#*$'\n'}"
+    if printf '%s\n' "$BUILD_ARGS" | grep -Eq '^[[:space:]]*INSTALL_RUBIN_PRERELEASE=true[[:space:]]*$'; then
+      info "INSTALL_RUBIN_PRERELEASE=true：Dockerfile 跳过 flashinfer 安装，wheelhouse 未启用"
+    elif [[ "$DRY_RUN" == true ]]; then
+      flashinfer_wheelhouse_ready=true
+      info "[预演] flashinfer wheelhouse: 将预下载 flashinfer-jit-cache==${flashinfer_version} 到 $FLASHINFER_WHEELHOUSE_DIR（索引 ${flashinfer_index}）"
+    else
+      prepare_flashinfer_wheelhouse "$flashinfer_version" "$flashinfer_index"
+      flashinfer_wheelhouse_ready=true
+    fi
+  elif [[ "$flashinfer_engine_ok" == true && -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]]; then
+    info "Dockerfile 未找到 flashinfer-jit-cache 安装步骤或无法推导 wheel 索引，跳过 wheelhouse"
+  fi
+fi
+
 archive="$BUILD_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
 build_dockerfile="$VLLM_SOURCE_DIR/$DOCKERFILE"
 if [[ "$BUILD_UV_CACHE_SHARING" != private && "$BUILD_UV_CACHE_SHARING" != locked && "$BUILD_UV_CACHE_SHARING" != shared ]]; then
@@ -474,6 +646,16 @@ elif [[ "$DRY_RUN" != true && "$BUILD_ENGINE" != indocker ]]; then
   build_dockerfile="$BUILD_OUTPUT_DIR/.vllm-Dockerfile-uv-$BUILD_UV_CACHE_SHARING"
   sed "s#--mount=type=cache,target=/opt/uv/cache#--mount=type=cache,target=/opt/uv/cache,sharing=$BUILD_UV_CACHE_SHARING#g" \
     "$VLLM_SOURCE_DIR/$DOCKERFILE" > "$build_dockerfile"
+fi
+if [[ "$flashinfer_wheelhouse_ready" == true && "$DRY_RUN" != true ]]; then
+  flashinfer_dockerfile="${build_dockerfile}-flashinfer"
+  if apply_flashinfer_wheelhouse_rewrite "$build_dockerfile" "$flashinfer_dockerfile"; then
+    build_dockerfile="$flashinfer_dockerfile"
+  else
+    rm -f "$flashinfer_dockerfile"
+    info "警告：flashinfer 安装步骤形态与预期不符，保留构建内远程安装"
+    flashinfer_wheelhouse_ready=false
+  fi
 fi
 if [[ -z "$INDOCKER_OUTPUT_DIR" ]]; then INDOCKER_OUTPUT_DIR="$BUILD_OUTPUT_DIR"; fi
 mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true
@@ -487,6 +669,20 @@ if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == indocker && "$INDOCKER_RUNTIME" =
   fi
 fi
 
+# flashinfer wheelhouse 以附加构建上下文注入，供 COPY --from=flashinfer-wheelhouse
+# 引用；buildctl 用 frontend 选项等价表达。
+flashinfer_context_args=()
+if [[ "$flashinfer_wheelhouse_ready" == true ]]; then
+  case "$BUILD_ENGINE" in
+    docker-buildx|docker|nerdctl)
+      flashinfer_context_args=(--build-context "flashinfer-wheelhouse=$FLASHINFER_WHEELHOUSE_DIR")
+      ;;
+    buildctl)
+      build_args+=("--opt" "context:flashinfer-wheelhouse=$FLASHINFER_WHEELHOUSE_DIR")
+      ;;
+  esac
+fi
+
 if [[ "$BUILD_ENGINE" == nerdctl ]]; then
   build_cmd=(nerdctl -n "$CTR_NAMESPACE" build
     --platform "$BUILD_PLATFORM"
@@ -494,6 +690,7 @@ if [[ "$BUILD_ENGINE" == nerdctl ]]; then
     --tag "$IMAGE"
     "${nerdctl_build_args[@]}"
     "${nerdctl_cache_args[@]}"
+    "${flashinfer_context_args[@]}"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker ]]; then
   build_cmd=(docker build
@@ -504,6 +701,7 @@ elif [[ "$BUILD_ENGINE" == docker ]]; then
     --file "$build_dockerfile"
     --tag "$IMAGE"
     "${docker_build_args[@]}"
+    "${flashinfer_context_args[@]}"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
   build_cmd=(docker buildx build --builder "$BUILDX_BUILDER"
@@ -514,6 +712,7 @@ elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
     --tag "$IMAGE"
     "${docker_build_args[@]}"
     "${docker_buildx_cache_args[@]}"
+    "${flashinfer_context_args[@]}"
     --output "type=oci,dest=$archive"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == indocker ]]; then
@@ -567,8 +766,8 @@ else
   build_cmd=(buildctl --addr "$BUILDKIT_ADDR" build
     --frontend dockerfile.v0
     --local "context=$context_path"
-    --local "dockerfile=$VLLM_SOURCE_DIR"
-    --opt "filename=$DOCKERFILE"
+    --local "dockerfile=$(dirname "$build_dockerfile")"
+    --opt "filename=$(basename "$build_dockerfile")"
     --opt "platform=$BUILD_PLATFORM"
     "${build_args[@]}"
     "${build_cache_args[@]}"
@@ -584,6 +783,7 @@ info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS，nvcc 线程: $BUILD_NVCC_THREADS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
 [[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
+[[ "$flashinfer_wheelhouse_ready" == true ]] && info "flashinfer wheelhouse: $FLASHINFER_WHEELHOUSE_DIR（flashinfer-jit-cache==${flashinfer_version} 本地安装）"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
   info "警告：当前代理仅绑定宿主机回环地址，BuildKit RUN 可能无法访问；请设置 BUILD_PROXY_URL 为构建网络可达的代理地址"
 fi
