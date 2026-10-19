@@ -26,7 +26,7 @@ usage() {
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
-  BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
+  BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
   INDOCKER_OUTPUT_DIR runner 输出目录，默认 BUILD_OUTPUT_DIR
@@ -89,7 +89,7 @@ BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
 BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
 BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
-BUILD_ENGINE="${BUILD_ENGINE:-auto}"
+BUILD_ENGINE="${BUILD_ENGINE:-indocker}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
 INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-}"
@@ -573,14 +573,13 @@ if [[ "$DRY_RUN" != true ]]; then
   command -v ctr >/dev/null || die "缺少 ctr"
     case "$BUILD_ENGINE" in
     auto)
-      # 优先使用 Buildx：它支持可持久化的本地 layer cache；只有 Buildx
-      # 不可用时才回退到普通 Docker/indocker。显式指定 BUILD_ENGINE 仍优先。
-      if command -v docker >/dev/null && docker info >/dev/null 2>&1 \
-          && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
-      elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
+      # 显式选择 auto 时优先使用 Docker-in-Docker；需要 Buildx 时请显式设置 BUILD_ENGINE=docker-buildx。
+      if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=indocker
+      elif command -v nerdctl >/dev/null; then BUILD_ENGINE=indocker
+      elif command -v ctr >/dev/null; then BUILD_ENGINE=indocker
+      elif command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
       elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
-      elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少可用构建器：请安装 Docker（推荐含 Buildx）、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
+      else die "缺少可用构建器：请安装 Docker/nerdctl/ctr 以运行 indocker，或安装 buildctl+buildkitd"; fi
       ;;
     buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
     indocker) command -v docker >/dev/null || command -v nerdctl >/dev/null || command -v ctr >/dev/null || die "缺少 indocker 外层运行时" ;;
