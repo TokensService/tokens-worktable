@@ -44,7 +44,7 @@ usage() {
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
   BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
-  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 shared
+  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 locked（避免并行阶段争用 wheel 锁）
   UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
   FLASHINFER_PREDOWNLOAD  预下载 flashinfer-jit-cache wheel 并改写 Dockerfile 为本地
                           wheelhouse 安装，默认 true；false 保留构建内远程安装
@@ -121,7 +121,7 @@ BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
 # 两个 Docker 构建阶段会并行安装相同的 Python 依赖。共享 uv 缓存可避免
 # runtime/base 阶段重复下载；uv 自身会对缓存文件加锁。
-BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-shared}"
+BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-locked}"
 UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 # flashinfer-jit-cache wheel 约 1GB，构建内从 flashinfer.ai 拉取经常长时间无输出
 # 甚至卡死。默认先在执行机预下载到 wheelhouse，构建时经附加构建上下文
