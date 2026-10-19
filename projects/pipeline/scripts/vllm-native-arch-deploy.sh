@@ -329,25 +329,19 @@ fetch_arch_file() {
   if [[ "$arch_fetch" != 'git' ]]; then
     local urls url
     urls="$(python3 - "${platform_git_url:-}" "${platform_git_branch:-}" \
-      "$arch_dir" 'model_arch.yaml' "$arch_url" <<'PY'
+      "$arch_dir" 'model_arch.yaml' "$arch_url" 'TokensService/vllm' <<'PY'
 import sys
 
-git_url, branch, arch_dir, arch_file, explicit = sys.argv[1:6]
+git_url, branch, arch_dir, arch_file, explicit, fork_repo = sys.argv[1:7]
 if explicit:
     for key, value in {"branch": branch, "arch_dir": arch_dir, "arch_file": arch_file}.items():
         explicit = explicit.replace("{" + key + "}", value)
     print(explicit)
 
-if git_url:
-    raw = git_url.strip()
-    if raw.startswith("git@"):
-        host, _, rest = raw[4:].partition(":")
-        scheme = "https"
-    else:
-        scheme, _, rest = raw.partition("://") if "://" in raw else ("https", "", raw)
-        host, _, rest = rest.partition("/")
-    repo = rest[:-4] if rest.endswith(".git") else rest
-    path = f"{arch_dir.strip('/')}/{arch_file}"
+path = f"{arch_dir.strip('/')}/{arch_file}"
+
+
+def emit(repo, host, scheme):
     if host.endswith("github.com"):
         print(f"https://raw.githubusercontent.com/{repo}/{branch}/{path}")
         print(f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}")
@@ -358,6 +352,25 @@ if git_url:
         print(f"https://gitee.com/{repo}/raw/{branch}/{path}")
     else:
         print(f"{scheme}://{host}/{repo}/-/raw/{branch}/{path}")
+
+
+# org fork（arch 分支与策略文件只存在于 fork 上）优先，再尝试平台注入的代码仓
+repos = []
+if fork_repo:
+    repos.append((fork_repo, "github.com", "https"))
+if git_url:
+    raw = git_url.strip()
+    if raw.startswith("git@"):
+        host, _, rest = raw[4:].partition(":")
+        scheme = "https"
+    else:
+        scheme, _, rest = raw.partition("://") if "://" in raw else ("https", "", raw)
+        host, _, rest = rest.partition("/")
+    repo = rest[:-4] if rest.endswith(".git") else rest
+    if repo and repo != fork_repo:
+        repos.append((repo, host, scheme))
+for repo, host, scheme in repos:
+    emit(repo, host, scheme)
 PY
 )" || die "生成策略地址候选失败" 2
     while IFS= read -r url; do
@@ -394,7 +407,6 @@ PY
   fi
 
   local git_url="${platform_git_url:-}" git_branch="${platform_git_branch:-}"
-  [[ -n "$git_url" ]] || die "策略文件获取失败，且缺少平台注入的代码仓地址" 2
   [[ -n "$git_branch" ]] || die "缺少平台注入的代码仓分支" 2
   local askpass="$dest/.git-askpass"
   # 用小写变量把凭据传给 askpass 子进程：大写名加冒号默认值的引用形态会被参数识别器扫成入参
@@ -409,16 +421,32 @@ ASKPASS
   chmod 700 "$askpass"
   export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
   local tmp_repo="$dest/.repo"
-  if git -c credential.helper= clone --quiet --depth 1 --filter=blob:none --sparse \
-       --branch "$git_branch" --single-branch "$git_url" "$tmp_repo" 2>/dev/null; then
-    git -C "$tmp_repo" sparse-checkout set "$arch_dir" >/dev/null 2>&1 \
-      || warn "sparse-checkout 设置失败，继续尝试读取已知路径"
-  else
-    log "部分克隆不可用，回退浅克隆整个仓库"
+  # arch 分支只存在于 org fork 上，先试 fork，再回落平台注入的代码仓
+  local -a clone_urls=('https://github.com/TokensService/vllm')
+  [[ -n "$git_url" && "$git_url" != *'TokensService/vllm'* ]] && clone_urls+=("$git_url")
+  local cu clone_ok=''
+  local -a tried=()
+  for cu in "${clone_urls[@]}"; do
+    tried+=("$cu")
     rm -rf "$tmp_repo"
-    git -c credential.helper= clone --quiet --depth 1 --branch "$git_branch" \
-      --single-branch "$git_url" "$tmp_repo" || die "git 拉取代码仓失败：$git_url@$git_branch"
-  fi
+    if git -c credential.helper= clone --quiet --depth 1 --filter=blob:none --sparse \
+         --branch "$git_branch" --single-branch "$cu" "$tmp_repo" 2>/dev/null; then
+      clone_ok="$cu"
+      git -C "$tmp_repo" sparse-checkout set "$arch_dir" >/dev/null 2>&1 \
+        || warn "sparse-checkout 设置失败，继续尝试读取已知路径"
+      break
+    fi
+    log "部分克隆不可用，回退浅克隆整个仓库：$cu"
+    rm -rf "$tmp_repo"
+    if git -c credential.helper= clone --quiet --depth 1 --branch "$git_branch" \
+         --single-branch "$cu" "$tmp_repo" 2>/dev/null; then
+      clone_ok="$cu"
+      break
+    fi
+    warn "该仓库没有分支 $git_branch 或克隆失败：$cu"
+  done
+  [[ -n "$clone_ok" ]] || die "git 拉取代码仓失败（已尝试：${tried[*]}；分支：$git_branch）"
+  git -C "$tmp_repo" sparse-checkout set "$arch_dir" >/dev/null 2>&1 || true
   local src="$tmp_repo/$arch_dir/model_arch.yaml"
   [[ -f "$src" ]] || die "分支 $git_branch 中不存在策略文件 $arch_dir/model_arch.yaml"
   cp "$src" "$target" || die "复制策略文件失败"
@@ -1224,6 +1252,8 @@ remote_clean() {
       nerdctl -n "$containerd_ns" rm -f "$name" >/dev/null 2>&1
     fi
   done
+  # 停掉上一轮的日志泵（否则新旧两轮会重复写同一批容器日志）
+  pkill -f "nerdctl -n ${containerd_ns} logs -f ${container_prefix}" 2>/dev/null || true
   pids="$(pgrep -f 'vllm::router' 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
     log "停止旧 router 进程"
@@ -1249,6 +1279,45 @@ remote_wait_gpu_free() {
   return 0
 }
 
+# ---- 业务日志落盘（固定落在本机数据盘 /mnt/paas，只落目标机，不回拉执行机）-------------
+# 位置：/mnt/paas/vllm-native-logs/<流水线名>-<arch名>-<YYYYmmdd-HHMMSS>/
+#   vllm-native-prefill.log / vllm-native-decode.log / vllm-native-lmcache.log / router.log
+# 即 vLLM 引擎、LMCache、vllm-router 的 stdout；与部署脚本日志（平台 step log 留在 1.46）分开。
+# 数据盘容量充足：**不轮转、不自动清理**，每次部署一个目录一直留着。
+# /mnt/paas 不可写时退回 <工作目录>/logs/（带 warn）。
+native_log_root='/mnt/paas/vllm-native-logs'
+log_dir=''
+
+init_log_dir() {
+  [[ -n "$log_dir" ]] && return 0
+  local stamp label base
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  # 目录名：流水线名 + arch 名（都来自平台注入），斜杠/空格换成 _
+  label="${platform_pipeline_name:-vllm-native}-${model_name:-${deploy_strategy:-unknown}}"
+  label="$(printf '%s' "$label" | tr '/ ' '__')"
+  if mkdir -p "$native_log_root" 2>/dev/null && [[ -w "$native_log_root" ]]; then
+    base="$native_log_root"
+  else
+    warn "数据盘 $native_log_root 不可写，日志退回工作目录：$work_dir/logs"
+    base="$work_dir/logs"
+    mkdir -p "$base" 2>/dev/null || die "创建日志目录失败：$base" 2
+  fi
+  log_dir="$base/${label}-${stamp}"
+  mkdir -p "$log_dir" || die "创建日志目录失败：$log_dir" 2
+  ln -sfn "$log_dir" "$base/current"
+  printf '%s\n' "$log_dir" >"$base/.current-path"
+  log "业务日志目录：$log_dir"
+}
+
+# 把某容器的 stdout 持续泵到 <日志目录>/<容器名>.log（直接追加，不轮转）
+start_log_pump() {
+  local name="$1"
+  [[ -n "$log_dir" ]] || return 0
+  setsid nohup nerdctl -n "$containerd_ns" logs -f "$name" \
+    >>"$log_dir/$name.log" 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$log_dir/.pump-$name.pid"
+}
+
 remote_run_container() {
   local name="$1" gpus="$2" entry="$3"
   nerdctl -n "$containerd_ns" run -d --name "$name" --network host \
@@ -1256,6 +1325,7 @@ remote_run_container() {
     -v "$MODEL_DIR:$MODEL_DIR" -v "$work_dir:$work_dir" \
     -e "NVIDIA_VISIBLE_DEVICES=$gpus" -e "CUDA_VISIBLE_DEVICES=$gpus" \
     --entrypoint /bin/bash "$image_ref" -c "bash $work_dir/$entry"
+  start_log_pump "$name"
 }
 
 # 并行等待多个实例就绪：任一容器退出立即失败，全部 health=200 才返回 0
@@ -1321,6 +1391,7 @@ remote_start_lmcache() {
         --max-cpu-workers "$lmcache_max_cpu_workers" \
         ${LMCACHE_OTLP_ENDPOINT:+--otlp-endpoint $LMCACHE_OTLP_ENDPOINT --enable-tracing}" \
     >/dev/null || return 1
+  start_log_pump "$name"
   while (( waited < lmcache_ready_timeout )); do
     if curl -s --max-time 3 "http://127.0.0.1:$lmcache_http_port/healthcheck" | grep -q healthy; then
       log "LMCache server 就绪（等待 ${waited}s）"
@@ -1424,7 +1495,7 @@ remote_start_router() {
     --decode "http://127.0.0.1:$decode_port" \
     --host 0.0.0.0 --port "$router_port" \
     --intra-node-data-parallel-size 1 \
-    >"$work_dir/router.log" 2>&1 &
+    >"${log_dir:-$work_dir}/router.log" 2>&1 &
   while (( waited < 60 )); do
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
       "http://127.0.0.1:$router_port/v1/models" 2>/dev/null)"
@@ -1497,6 +1568,7 @@ remote_main() {
   model_name="${platform_model_name:-}"
   arch_source="${platform_native_arch_source:-remote}"
   log "远端阶段开始：目标机 $target_ip，工作目录 $work_dir"
+  init_log_dir
   [[ -n "$image_ref" ]] || die "远端缺少镜像参数" 2
   [[ -f "$work_dir/config-prefill.yaml" || -f "$work_dir/config-standalone.yaml" ]] \
     || die "远端缺少渲染产物（$work_dir）" 2
@@ -1572,7 +1644,15 @@ remote_main() {
   if [[ "$mode" == 'pd' ]]; then
     remote_start_router "$primary_port" "$decode_port" || return 1
     # 自动端口转发：对外暴露端口 → router（表里没有的节点会自动跳过）
-    remote_setup_port_forward "$service_ip" "$router_port"
+    # 这里要自己算小网 IP：下面的 service_ip 是 local，在本调用之后才声明
+    local svc_ip=''
+    svc_ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+    [[ -n "$svc_ip" ]] \
+      || svc_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' \
+        | grep -vE '^(127\.|172\.(1[7-9]|2[0-9]|3[01])\.|169\.254\.)' | head -1)"
+    [[ -n "$svc_ip" ]] || svc_ip="$target_ip"
+    remote_setup_port_forward "$svc_ip" "$router_port"
     if [[ "$verify_after" == '1' ]]; then
       remote_verify_pd "$decode_port" || return 1
     fi
@@ -1605,6 +1685,7 @@ remote_main() {
   printf 'NATIVE_VLLM_ARCH=%s\n' "$deploy_strategy"
   printf 'NATIVE_VLLM_ARCH_SOURCE=%s\n' "$arch_source"
   printf 'NATIVE_VLLM_TARGET_IP=%s\n' "$service_ip"
+  printf 'NATIVE_VLLM_LOG_DIR=%s\n' "${log_dir:-$work_dir/logs}"
   printf 'NATIVE_VLLM_IMAGE=%s\n' "$image_ref"
   printf 'NATIVE_VLLM_LMCACHE=%s\n' "$LMCACHE_ENABLE"
   printf 'NATIVE_VLLM_ROUTER_PORT=%s\n' "$router_port"
@@ -1757,6 +1838,7 @@ PY
   log "在目标机执行远端阶段"
   local remote_env=(
     "NATIVE_VLLM_IMAGE=$image_ref"
+    "PIPELINE_NAME=${platform_pipeline_name:-}"
     "MODEL_DIR=$MODEL_DIR"
     "DEPLOY_STRATEGY=$deploy_strategy"
     "NATIVE_VLLM_TARGET_IP=$target_ip"
