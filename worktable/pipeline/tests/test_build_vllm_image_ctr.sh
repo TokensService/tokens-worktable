@@ -34,15 +34,21 @@ trap 'rm -rf "$source_dir"' EXIT
 mkdir -p "$source_dir/docker"
 printf 'FROM scratch\n' > "$source_dir/docker/Dockerfile"
 
+# 固定 buildctl 引擎：dry-run 不校验命令存在性，保证在任何执行机
+# （包括装有 docker/buildx 的机器）都断言同一份构建命令契约。
+# 用 VLLM_REF 而非 GIT_BRANCH：工作台注入的 GIT_BRANCH 非空时会强制
+# branch-time 重算 IMAGE_TAG，显式 tag 契约必须绕开该路径。
 output="$(VLLM_SOURCE_DIR="$source_dir" \
   GIT_URL=https://github.com/TokensService/vllm \
-  GIT_BRANCH=v0.30.0 \
+  VLLM_REF=v0.30.0 \
   IMAGE_NAME=myapp \
   SWR_REGISTRY=swr.example.com \
   SWR_REPOSITORY='' \
+  IMAGE_TAG_MODE=explicit \
   IMAGE_TAG=test-tag \
   SWR_USERNAME=test-user \
   SWR_PASSWORD=test-password \
+  BUILD_ENGINE=buildctl \
   "$SCRIPT" "" --dry-run 2>&1)"
 
 grep -Fq 'buildctl --addr' <<<"$output"
