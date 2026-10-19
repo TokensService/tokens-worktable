@@ -1082,6 +1082,47 @@ cleanup_legacy_cluster_rbac() {
   done
 }
 
+cleanup_stale_release_services() {
+  local services_file service service_namespace service_name
+  services_file="$(mktemp)"
+  "$KUBECTL_BIN" get svc -A -o json >"$services_file"
+  mapfile -t stale_services < <(python3 - "$services_file" "$RELEASE_NAME" "$NAMESPACE" <<'PY'
+import json
+import sys
+
+path, release, namespace = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+for item in data.get("items", []):
+    metadata = item.get("metadata", {})
+    labels = metadata.get("labels", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    item_namespace = metadata.get("namespace", "")
+    helm_owned = (
+        annotations.get("meta.helm.sh/release-name") == release
+        and annotations.get("meta.helm.sh/release-namespace") == namespace
+    )
+    instance_owned = (
+        item_namespace == namespace
+        and labels.get("app.kubernetes.io/instance") == release
+        and labels.get("app.kubernetes.io/managed-by") == "Helm"
+    )
+    if helm_owned or instance_owned:
+        name = metadata.get("name")
+        if name:
+            print(f"{item_namespace}\t{name}")
+PY
+  )
+  rm -f "$services_file"
+  for service in "${stale_services[@]}"; do
+    [[ -n "$service" ]] || continue
+    service_namespace="${service%%$'\t'*}"
+    service_name="${service#*$'\t'}"
+    echo "[deploy] remove stale release Service: ${service_namespace}/${service_name}"
+    "$KUBECTL_BIN" -n "$service_namespace" delete service "$service_name" \
+      --ignore-not-found --wait=true
+  done
+}
+
 ensure_raycluster_cleanup_service_account() {
   local raycluster="$RELEASE_NAME-kuberay" service_account
 
@@ -1260,6 +1301,7 @@ cleanup_legacy_cluster_rbac
 wait_for_release_cleanup
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+cleanup_stale_release_services
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
 # Remove taints immediately before the new RayCluster is installed.  This
