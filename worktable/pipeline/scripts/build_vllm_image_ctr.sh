@@ -648,7 +648,7 @@ archive="$BUILD_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
 build_dockerfile="$VLLM_SOURCE_DIR/$DOCKERFILE"
 if [[ "$BUILD_UV_CACHE_SHARING" != private && "$BUILD_UV_CACHE_SHARING" != locked && "$BUILD_UV_CACHE_SHARING" != shared ]]; then
   die "BUILD_UV_CACHE_SHARING 必须是 private、locked 或 shared: $BUILD_UV_CACHE_SHARING"
-elif [[ "$DRY_RUN" != true && "$BUILD_ENGINE" != indocker ]]; then
+elif [[ "$DRY_RUN" != true ]]; then
   # vLLM 的 base/runtime 阶段会并行执行 uv。默认 cache mount 是 shared，
   # 两个 uv 进程可能争用同一个 wheel lock，等待 300 秒后失败。仅生成
   # 构建副本并设置并发策略，不修改源码 checkout。
@@ -744,7 +744,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -v "$BUILD_CACHE_DIR/dind:/var/lib/docker"
         -e "IMAGE_REF=$IMAGE"
         -e "SOURCE_DIR=/workspace/source"
-        -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
+        -e "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
@@ -759,7 +759,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -v "$INDOCKER_OUTPUT_DIR:/output"
         -v "$BUILD_CACHE_DIR/dind:/var/lib/docker"
         -e "IMAGE_REF=$IMAGE" -e "SOURCE_DIR=/workspace/source"
-        -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
+        -e "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
@@ -772,7 +772,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --mount "type=bind,src=$INDOCKER_OUTPUT_DIR,dst=/output,options=rbind:rw"
         --mount "type=bind,src=$BUILD_CACHE_DIR/dind,dst=/var/lib/docker,options=rbind:rw"
         --env "IMAGE_REF=$IMAGE" --env "SOURCE_DIR=/workspace/source"
-        --env "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
+        --env "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         --env "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
