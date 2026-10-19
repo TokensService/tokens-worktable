@@ -656,6 +656,15 @@ elif [[ "$DRY_RUN" != true && "$BUILD_ENGINE" != indocker ]]; then
   build_dockerfile="$BUILD_OUTPUT_DIR/.vllm-Dockerfile-uv-$BUILD_UV_CACHE_SHARING"
   sed "s#--mount=type=cache,target=/opt/uv/cache#--mount=type=cache,target=/opt/uv/cache,sharing=$BUILD_UV_CACHE_SHARING#g" \
     "$VLLM_SOURCE_DIR/$DOCKERFILE" > "$build_dockerfile"
+  # 持久化 CMake FetchContent 外部源码，避免失败重试时重新克隆 Git 子模块。
+  awk '
+    { print }
+    /--mount=type=cache,target=\/opt\/uv\/cache/ {
+      print "    --mount=type=cache,target=\/workspace\/.deps,sharing=shared \\"
+    }
+  ' "$build_dockerfile" > "${build_dockerfile}.tmp"
+  mv "${build_dockerfile}.tmp" "$build_dockerfile"
+  sed -i '/^[[:space:]]*rm -rf \.deps && \\$/d' "$build_dockerfile"
 fi
 if [[ "$flashinfer_wheelhouse_ready" == true && "$DRY_RUN" != true ]]; then
   flashinfer_dockerfile="${build_dockerfile}-flashinfer"
