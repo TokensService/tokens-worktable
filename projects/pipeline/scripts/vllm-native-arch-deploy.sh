@@ -159,11 +159,17 @@ declare -n hidden_lmcache_ratio='LMCACHE_EVICTION_RATIO' 2>/dev/null || true
 declare -n hidden_lmcache_l1_init='LMCACHE_L1_INIT_SIZE_GB' 2>/dev/null || true
 declare -n hidden_lmcache_ready_timeout='LMCACHE_READY_TIMEOUT_SECONDS' 2>/dev/null || true
 declare -n hidden_lmcache_cpu_workers='LMCACHE_MAX_CPU_WORKERS' 2>/dev/null || true
+declare -n hidden_lmcache_gpu_workers='LMCACHE_MAX_GPU_WORKERS' 2>/dev/null || true
 
 lmcache_mp_port="${hidden_lmcache_mp_port:-6555}"
 lmcache_http_port="${hidden_lmcache_http_port:-8090}"
 # LMCache MP CPU 亲和池 worker 数（默认 8；可用隐藏变量 LMCACHE_MAX_CPU_WORKERS 覆盖）
 lmcache_max_cpu_workers="${hidden_lmcache_cpu_workers:-8}"
+# LMCache MP GPU 亲和池 worker 数（STORE/RETRIEVE + KV cache 注册都落在这个池）
+# ⚠️ 默认是 1：多 P 实例（2P/3P…）时会串行注册，后注册的实例报
+#    "register_kv_caches within 300s" 超时 → 必须 >= P 实例数（默认 8 留余量）
+# 可用隐藏变量 LMCACHE_MAX_GPU_WORKERS 覆盖
+lmcache_max_gpu_workers="${hidden_lmcache_gpu_workers:-8}"
 lmcache_chunk_size="${hidden_lmcache_chunk_size:-1024}"
 lmcache_eviction_policy="${hidden_lmcache_eviction:-LRU}"
 # 驱逐触发水位 / 单次驱逐比例（lmcache server 默认 0.8 / 0.2）
@@ -655,20 +661,27 @@ with open(f"{out_dir}/env-{out_role}.sh", "w", encoding="utf-8") as handle:
 PY
   # 实例 > 0（如 prefill-1）：端口与 Mooncake bootstrap 端口递增，避免同机冲突
   if (( inst_idx > 0 )); then
-    python3 - "$stage_dir/config-$role.yaml" "$stage_dir/env-$role.sh" "$inst_idx" <<'PY' \
+    python3 - "$stage_dir/config-$role.yaml" "$stage_dir/env-$role.sh" "$stage_dir/args-$role.sh" "$inst_idx" <<'PY' \
       || die "$role 实例端口递增失败"
 import re
 import sys
 
-cfg, envf, idx = sys.argv[1], sys.argv[2], int(sys.argv[3])
+cfg, envf, argsf, idx = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 text = open(cfg, encoding="utf-8").read()
 text, n = re.subn(r"^port:\s*(\d+)$", lambda m: f"port: {int(m.group(1)) + idx}", text, count=1, flags=re.M)
 open(cfg, "w", encoding="utf-8").write(text)
 env = open(envf, encoding="utf-8").read()
 env = re.sub(r"(VLLM_MOONCAKE_BOOTSTRAP_PORT=)(\d+)", lambda m: m.group(1) + str(int(m.group(2)) + idx), env)
 open(envf, "w", encoding="utf-8").write(env)
+# args（真正传给 vllm serve 的）："--port\n  <value>" 必须一起递增，
+# 否则实例 2 仍绑实例 1 的端口（config yaml 只是参考，entry 用的是 args 数组）
+args = open(argsf, encoding="utf-8").read()
+args, nargv = re.subn(r"(--port\s*\n\s*)(\d+)", lambda m: m.group(1) + str(int(m.group(2)) + idx), args, count=1)
+if nargv == 0:
+    raise SystemExit("args 里没找到 --port，无法递增实例端口")
+open(argsf, "w", encoding="utf-8").write(args)
 PY
-    log "  [$role] 实例 $inst_idx：端口与 Mooncake bootstrap 端口已递增（+$inst_idx）"
+    log "  [$role] 实例 $inst_idx：args/config 端口 + Mooncake bootstrap 端口均递增（+$inst_idx）"
   fi
 }
 
@@ -725,12 +738,12 @@ write_patch_appliers() {
     {
       printf '#!/usr/bin/env bash\n'
       printf 'site_packages=/usr/local/lib/python3.12/dist-packages\n'
-      if [[ "$role" == "decode" && "$NATIVE_VLLM_MOEFIX" == "1" ]]; then
+      if [[ "${role%%_*}" == "decode" && "$NATIVE_VLLM_MOEFIX" == "1" ]]; then
         printf 'if [[ -f "%s/moefix/vllm_native_moefix.py" ]]; then\n' "$work_dir"
         printf '  cp "%s/moefix/vllm_native_moefix.py" "%s/moefix/zz_vllm_native_moefix.pth" "$site_packages"/\n' "$work_dir" "$work_dir"
         printf 'fi\n'
       fi
-      if [[ "$role" == "prefill" && "$LMCACHE_ENABLE" == "1" ]]; then
+      if [[ "${role%%_*}" == "prefill" && "$LMCACHE_ENABLE" == "1" ]]; then
         printf 'if [[ -f "%s/vllm_native_metafix.py" ]]; then\n' "$work_dir"
         printf '  cp "%s/vllm_native_metafix.py" "%s/zz_vllm_native_metafix.pth" "$site_packages"/\n' "$work_dir" "$work_dir"
         printf 'fi\n'
@@ -1064,6 +1077,34 @@ first_inst_role() {
     decode) if (( d_inst > 1 )); then printf 'decode_1'; else printf 'decode'; fi ;;
     *) printf '%s' "$1" ;;
   esac
+}
+
+# 用当前 roles（含实例后缀）重建 container_names；远端阶段 source 完 role-facts 后必须调用，
+# 否则清理/巡检只认默认的 prefill/decode/standalone，会漏掉 prefill_1/prefill_2 这类实例容器
+rebuild_container_names() {
+  local role
+  container_names=()
+  for role in "${roles[@]}"; do container_names+=("${container_prefix}-$role"); done
+  container_names+=("${container_prefix}-lmcache")
+}
+
+# 所有 prefill 实例用到的卡（并集、去重保序）。LMCache MP server 必须能看到这些卡的全部，
+# 否则第 2/3 个 P 实例注册 KV cache 会报
+#   "Device UUID ... not found in the discovered devices"（打不开别的卡上的 CUDA IPC 句柄）
+all_prefill_gpu_list() {
+  local role gl g seen='' out=''
+  for role in "${roles[@]}"; do
+    [[ "${role%%_*}" == 'prefill' ]] || continue
+    gl="$(gpu_list_for_role "$role")"
+    gl="${gl//,/ }"
+    for g in $gl; do
+      [[ -n "$g" ]] || continue
+      [[ ",$seen," == *",$g,"* ]] && continue
+      seen="${seen:+$seen,}$g"
+      out="${out:+$out,}$g"
+    done
+  done
+  printf '%s' "${out:-$gpu_prefill}"
 }
 
 # 取某角色的 Mooncake bootstrap 端口（从渲染出的 env 文件读；没有则输出空）
@@ -1434,6 +1475,10 @@ remote_wait_instances() {
 
 remote_start_lmcache() {
   local name="${container_prefix}-lmcache" waited=0
+  # ⚠️ 必须是所有 prefill 实例卡的并集：LMCache 要打开每个实例在自己卡上的 CUDA IPC 句柄
+  local lmcache_gpu_list
+  lmcache_gpu_list="$(all_prefill_gpu_list)"
+  log "  LMCache 可见 GPU：$lmcache_gpu_list（所有 prefill 实例卡的并集）"
   if [[ -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
     log "启动 LMCache MP server（L1=${LMCACHE_L1_SIZE_GB}G，初始 ${lmcache_l1_init_size_gb}G，端口 ${lmcache_mp_port}/${lmcache_http_port}，驱逐水位 ${lmcache_eviction_watermark}/比例 ${lmcache_eviction_ratio}，观测=开启：--otlp-endpoint $LMCACHE_OTLP_ENDPOINT --enable-tracing）"
   else
@@ -1441,14 +1486,15 @@ remote_start_lmcache() {
   fi
   nerdctl -n "$containerd_ns" run -d --name "$name" --network host \
     --runtime "$runtime_bin" --ipc=host \
-    -e "NVIDIA_VISIBLE_DEVICES=$gpu_prefill" \
-    -e "CUDA_VISIBLE_DEVICES=$gpu_prefill" \
+    -e "NVIDIA_VISIBLE_DEVICES=$lmcache_gpu_list" \
+    -e "CUDA_VISIBLE_DEVICES=$lmcache_gpu_list" \
     --entrypoint /bin/bash "$image_ref" \
     -c "exec lmcache server --host 0.0.0.0 --port $lmcache_mp_port --http-port $lmcache_http_port \
         --l1-size-gb $LMCACHE_L1_SIZE_GB --l1-init-size-gb $lmcache_l1_init_size_gb \
         --eviction-policy $lmcache_eviction_policy \
         --eviction-trigger-watermark $lmcache_eviction_watermark --eviction-ratio $lmcache_eviction_ratio \
         --chunk-size $lmcache_chunk_size --separate-object-groups --instance-id prefill \
+        --max-gpu-workers "$lmcache_max_gpu_workers" \
         --max-cpu-workers "$lmcache_max_cpu_workers" \
         ${LMCACHE_OTLP_ENDPOINT:+--otlp-endpoint $LMCACHE_OTLP_ENDPOINT --enable-tracing}" \
     >/dev/null || return 1
@@ -1552,7 +1598,7 @@ remote_start_router() {
     --policy "$router_policy" \
     --vllm-pd-disaggregation \
     --kv-connector "$router_kv_connector" \
-    --prefill "${router_prefill_args[@]}" \
+    "${router_prefill_args[@]}" \
     --decode "http://127.0.0.1:$decode_port" \
     --host 0.0.0.0 --port "$router_port" \
     --intra-node-data-parallel-size 1 \
@@ -1642,6 +1688,7 @@ remote_main() {
   # 这里先算一遍，保证即使跳过预检后续流程也有值
   parse_instances_from_arch
   roles_from_facts "$work_dir/role-facts.env"
+  rebuild_container_names   # ⚠️ 远端也要重建，否则清理漏掉 prefill_N 容器
   derive_gpu_lists "$(role_need "$(first_inst_role prefill)")" "$(role_need "$(first_inst_role decode)")"
   command -v nerdctl >/dev/null 2>&1 || {
     # 目标机缺 nerdctl：若产物里带了执行机的静态二进制就就地补装（gy1-2/hd2 多台节点如此）
@@ -1669,7 +1716,22 @@ remote_main() {
   port_check_and_fix post
 
   local role gpu_list decode_port='' health_rc=0
-  # LMCache：单机只起一个 MP server，本机所有 prefill 实例共用它
+  # 按依赖分两批：decode 不依赖 LMCache（kv_consumer 走 Mooncake），prefill 依赖
+  # → decode 先起、与 LMCache 的内存预钉并行，避免预钉（数百 GB，2~4 分钟）白等
+  local -a roles_early=() roles_late=()
+  for role in "${roles[@]}"; do
+    if [[ "${role%%_*}" == 'decode' ]]; then roles_early+=("$role"); else roles_late+=("$role"); fi
+  done
+
+  for role in "${roles_early[@]}"; do
+    gpu_list="$(gpu_list_for_role "$role")"
+    [[ -n "$gpu_list" ]] || die "无法为 $role 分配 GPU（按 arch 推导失败）" 1
+    remote_wait_gpu_free "$gpu_list"
+    log "启动 $role 容器（GPU $gpu_list，端口 $(role_port "$role")）—— 不依赖 LMCache，先起"
+    remote_run_container "${container_prefix}-$role" "$gpu_list" "entry-$role.sh" >/dev/null || return 1
+  done
+
+  # LMCache：单机只起一个 MP server，本机所有 prefill 实例共用它；只阻塞 prefill
   if [[ "$LMCACHE_ENABLE" == '1' && "$mode" == 'pd' ]]; then
     remote_wait_gpu_free "$gpu_prefill"
     remote_start_lmcache || return 1
@@ -1677,18 +1739,14 @@ remote_main() {
     warn "standalone 形态下 LMCACHE_ENABLE=1 不生效（LMCache 只接 prefill 角色）"
   fi
 
-  # 先一次性等各实例的卡空闲，再并行启动全部实例（prefill / prefill-1 / decode …）
-  for role in "${roles[@]}"; do
+  for role in "${roles_late[@]}"; do
     gpu_list="$(gpu_list_for_role "$role")"
     [[ -n "$gpu_list" ]] || die "无法为 $role 分配 GPU（按 arch 推导失败）" 1
     remote_wait_gpu_free "$gpu_list"
-  done
-  for role in "${roles[@]}"; do
-    gpu_list="$(gpu_list_for_role "$role")"
     log "启动 $role 容器（GPU $gpu_list，端口 $(role_port "$role")）"
     remote_run_container "${container_prefix}-$role" "$gpu_list" "entry-$role.sh" >/dev/null || return 1
   done
-  log "全部容器已并行启动（${#roles[@]} 个），等待就绪（上限 ${NATIVE_VLLM_READY_TIMEOUT_SECONDS}s）"
+  log "全部容器已启动（${#roles[@]} 个：先 ${#roles_early[@]} 个 decode，后 ${#roles_late[@]} 个 prefill），等待就绪（上限 ${NATIVE_VLLM_READY_TIMEOUT_SECONDS}s）"
   remote_wait_instances || health_rc=1
   if (( health_rc != 0 )); then
     warn "实例未全部就绪；容器保留供排障：nerdctl -n $containerd_ns logs <容器名>"
@@ -1699,12 +1757,14 @@ remote_main() {
     decode_port="$(role_port decode)"
     [[ -n "$decode_port" && "$decode_port" != '0' ]] \
       || die "渲染产物里 decode 缺少端口（role-facts.env）" 1
+    # ⚠️ 每个实例必须单独的 --prefill（--prefill 是 nargs=+，多个实例塞一个 flag 时
+    #    router 只取第一对 url+bootstrap，其余会被静默丢弃）
     router_prefill_args=()
     local rport bport
     for role in "${roles[@]}"; do
       [[ "$role" == prefill* ]] || continue
       rport="$(role_port "$role")"
-      router_prefill_args+=("http://127.0.0.1:$rport")
+      router_prefill_args+=("--prefill" "http://127.0.0.1:$rport")
       bport="$(role_bootstrap_port "$role")"
       [[ -n "$bport" ]] && router_prefill_args+=("$bport")
     done
@@ -1846,7 +1906,7 @@ PY
       # DEV 模式：开启后 vLLM 才暴露 /reset_prefix_cache、/sleep、/wake_up 等管理端点（清 HBM/KV 缓存）
       [[ "$NATIVE_VLLM_DEV_MODE" == '1' ]] && printf 'export VLLM_SERVER_DEV_MODE=1\n'
       # XCCL 插件（xccl-vllm-turbo）：按角色传入逗号分隔的 KEY=VALUE；为空则该侧不装插件
-      if [[ "$role" == 'decode' ]]; then xccl_list="$NATIVE_VLLM_XCCL_ENV_DECODE"; else xccl_list="$NATIVE_VLLM_XCCL_ENV_PREFILL"; fi
+      if [[ "${role%%_*}" == 'decode' ]]; then xccl_list="$NATIVE_VLLM_XCCL_ENV_DECODE"; else xccl_list="$NATIVE_VLLM_XCCL_ENV_PREFILL"; fi
       if [[ -n "$xccl_list" ]]; then
         xccl_whl="$(ls "$stage_dir"/xccl/*.whl 2>/dev/null | head -1)"
         [[ -n "$xccl_whl" ]] && printf 'export VLLM_XCCL_TURBO_WHL=%s/xccl/%s\n' "$work_dir" "$(basename "$xccl_whl")"
@@ -1889,11 +1949,7 @@ PY
     log "DRY_RUN=1：以下为计划，未执行任何远端操作"
     log "  镜像 $image_ref；目标机 $target_ip（user=$target_user）；工作目录 $work_dir"
     for role in "${roles[@]}"; do
-      if [[ "$role" == 'decode' ]]; then
-        log "  [$role] GPU=$gpu_decode 端口=$(role_port "$role")"
-      else
-        log "  [$role] GPU=$gpu_prefill 端口=$(role_port "$role")"
-      fi
+      log "  [$role] GPU=$(gpu_list_for_role "$role") 端口=$(role_port "$role")"
       printf '\n---- config-%s.yaml ----\n' "$role"
       cat "$stage_dir/config-$role.yaml"
       printf '\n---- env-%s.sh ----\n' "$role"
