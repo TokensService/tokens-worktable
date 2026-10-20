@@ -25,7 +25,7 @@ usage() {
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 1（降低 CUDA 编译峰值内存）
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
-  BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE；默认 torch_cuda_arch_list=（按当前 GPU 架构构建）
+  BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE；默认 torch_cuda_arch_list=（按当前 GPU 架构构建）且跳过 wheel 大小检查，可显式传 RUN_WHEEL_CHECK=true 开启
   BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
@@ -489,6 +489,13 @@ indocker_proxy_env_args() {
 build_args=()
 nerdctl_build_args=()
 docker_build_args=()
+# vLLM CUDA 13 Dockerfile 默认限制 wheel 不超过 500 MB。该检查面向发布
+# Python wheel 的 CI；此脚本构建容器镜像，默认跳过检查。显式 BUILD_ARGS
+# 中的 RUN_WHEEL_CHECK 值优先，仍可按需开启。
+if ! printf '%s\n' "$BUILD_ARGS" | grep -q '^RUN_WHEEL_CHECK='; then
+  [[ -z "$BUILD_ARGS" ]] || BUILD_ARGS+=$'\n'
+  BUILD_ARGS+='RUN_WHEEL_CHECK=false'
+fi
 if [[ -n "$BUILD_ARGS" ]]; then
   while IFS= read -r build_arg; do
     [[ -z "$build_arg" ]] && continue
