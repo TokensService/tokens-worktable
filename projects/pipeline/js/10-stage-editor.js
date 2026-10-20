@@ -29,8 +29,10 @@ function normalizeStageKind(s){
   if(s.kind==='http'){ if(!s.url) s.url={url:'',outVars:''}; if(!s.script) s.script=null; if(!s.evaltokens) s.evaltokens=null; }
   else if(s.kind==='evaltokens'){ const ps=s.evaltokens&&s.evaltokens.params; s.evaltokens=evaltokensStageConfig(s.evaltokens); s.evaltokens.params=Array.isArray(ps)?ps:[]; if(!s.script) s.script=null; if(!s.url) s.url=null; }
   else { if(!s.url) s.url=null; if(!s.evaltokens) s.evaltokens=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
-  /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空 */
-  s.sched = s.sched ? {} : null;
+  /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空。
+     仅 http 任务类型支持「本地执行」（需本地运行）：其余类型一律恢复支持定时（sched={}），不做本地运行 */
+  if(s.kind==='http') s.sched = s.sched ? {} : null;
+  else s.sched = {};
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
@@ -351,6 +353,11 @@ function renderStageSched(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-sched]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
+  /* 仅 http 任务类型支持「本地执行」（需本地运行）：其余类型一律只跟随流水线定时计划，不提供本地运行选项 */
+  if(s.kind!=='http'){
+    box.innerHTML='<span class="dshell-muted" style="font-size:11px;">跟随流水线定时计划执行（周期/一次性在「定时」页配置）；本任务类型不支持本地运行，由服务端触发</span>';
+    return;
+  }
   const on=!!s.sched;
   let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 本地运行</label><span class="dshell-muted" style="font-size:11px;cursor:help;margin-left:2px;" title="本地运行任务不支持定时任务">ⓘ</span>';
   if(on){
@@ -365,11 +372,12 @@ function setStageKind(i,k){
   if(k==='http'){ if(!s.url) s.url={url:'',outVars:''}; }
   else if(k==='evaltokens'){ if(!s.evaltokens) s.evaltokens=evaltokensStageConfig(null); if(!s.evaltokens.params) s.evaltokens.params=[]; }
   else if(k!=='simulate' && s.script){ s.script.lang=(k==='python')?'py':'sh'; }
+  if(k!=='http'){ s.sched={}; }   /* 仅 http 任务类型支持本地执行：切到其余类型一律恢复支持定时（跟随流水线定时计划） */
   /* 类型按钮选中态同步：整行不重渲染（避免输入失焦），仅切换 .sel 类 */
   const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){
     wrap.children[i].querySelectorAll('.jk-modeBtn').forEach(function(b){ b.classList.toggle('sel', b.getAttribute('data-kind')===k); });
   }
-  renderStageActionRow(i); renderStageParams(i);
+  renderStageActionRow(i); renderStageParams(i); renderStageSched(i);
 }
 function setStageUrl(i, val){
   const s=editStages[i]; if(!s) return;
