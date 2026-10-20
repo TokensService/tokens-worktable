@@ -308,12 +308,13 @@ async function savePlForm(){
     }
   }
   /* 定时阶段顺序校验：阶段默认支持定时，勾选「需本地运行」的阶段必须排在所有定时阶段之前；
-     即「若本地运行任务的前面有定时任务，则报错」；预设任务行不参与定时校验 */
+     即「若本地运行任务的前面有定时任务，则报错」；预设任务行不参与定时校验。
+     仅 http 任务类型支持本地执行，其余类型一律视为支持定时（不参与本地运行顺序约束） */
   {
     let schedStarted=false;
     for(let i=0;i<editStages.length;i++){
       if(editStages[i].preset) continue;
-      const has=!!editStages[i].sched;
+      const has=!!editStages[i].sched || editStages[i].kind!=='http';
       if(has){
         schedStarted=true;
       } else if(schedStarted){
@@ -336,7 +337,7 @@ async function savePlForm(){
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
     if(s.url) st.url={url:s.url.url, outVars:(s.url.outVars||'')};
     if(s.evaltokens) st.evaltokens=evaltokensStageConfig(s.evaltokens);
-    if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
+    if(s.sched || (s.kind && s.kind!=='http')) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划；非 http 类型不支持本地执行，保存时强制恢复支持定时（防旧草稿带 sched=null 残留）
     return st;
   });
   const editId=$('plForm').dataset.editId;
