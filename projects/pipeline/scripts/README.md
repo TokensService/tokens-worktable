@@ -494,3 +494,24 @@ Pod 加 `privileged: true`（会让 runtime 暴露全部节点 GPU）；③ P/D 
 可能措辞不同（异构并行数值差异，Prefill PP 与 Decode DP 专家布局不同），语义一致即正常；
 ④ 部署参数的镜像 tag 应与所选代码仓分支对应（check 阶段对 `GIT_BRANCH` 中的版本号与
 镜像 tag 做一致性提示）。单测：`test/test_vllm_native_scripts.sh`。
+
+## 参数 / 环境变量优先级（vllm-native-arch-deploy.sh）
+
+容器 entry 的生效顺序：
+
+```
+set -a; . env-<role>.sh        ← ① arch 的 env 段 → ② 脚本内置运行期 env → ③ NATIVE_VLLM_EXTRA_ENV_{PREFILL,DECODE}
+. apply-patches-<role>.sh
+. args-<role>.sh               ← arch 的 engine 段渲染出的启动参数
+. args-override-<role>.sh      ← 端口纠偏时生成（args 之后 source，后写覆盖）
+exec vllm serve "${vllm_native_args[@]}"
+```
+
+| 想覆盖的东西 | 用什么 | 谁赢 |
+|---|---|---|
+| arch 里某角色的 **env**（如 `VLLM_PP_LAYER_PARTITION`、`VLLM_MOONCAKE_BOOTSTRAP_PORT`） | `NATIVE_VLLM_EXTRA_ENV_PREFILL` / `NATIVE_VLLM_EXTRA_ENV_DECODE` | **EXTRA_ENV 赢** ✓（写在同一 env 文件末尾，后写覆盖先写） |
+| 脚本内置的运行期 env（`VLLM_ENGINE_READY_TIMEOUT_S`、`VLLM_USE_RUST_FRONTEND`、`VLLM_SERVER_DEV_MODE`、XCCL 变量） | 同上 | **EXTRA_ENV 赢** ✓ |
+| arch 里某角色的**启动参数**（`--gpu-memory-utilization`、`--max-model-len`、`--kv-transfer-config` …） | — | **EXTRA_ENV 无效** ✗（vLLM 自身规则：命令行 > 环境变量）→ 只能改 arch 的 `engine` 段 |
+| 引擎端口（被外部占用时） | 无需手工 | 脚本写 `args-override-<role>.sh`，在 args 之后 source → **override 赢** ✓ |
+
+角色分流：`decode` / `decode_1` → `NATIVE_VLLM_EXTRA_ENV_DECODE`；`prefill` / `prefill_N` / `standalone` → `NATIVE_VLLM_EXTRA_ENV_PREFILL`。

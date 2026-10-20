@@ -47,8 +47,10 @@ NATIVE_VLLM_XCCL_ENV_PREFILL="${NATIVE_VLLM_XCCL_ENV_PREFILL:-}"
 NATIVE_VLLM_XCCL_ENV_DECODE="${NATIVE_VLLM_XCCL_ENV_DECODE:-}"
 # NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS = 容器内引擎初始化的等待上限（秒），权重加载慢时调大；默认 3600
 NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS="${NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS:-3600}"
-# NATIVE_VLLM_EXTRA_ENV = 追加到两侧容器的环境变量：空格分隔的 KEY=VALUE，如 VLLM_XXX=1；默认空
-NATIVE_VLLM_EXTRA_ENV="${NATIVE_VLLM_EXTRA_ENV:-}"
+# NATIVE_VLLM_EXTRA_ENV_PREFILL = 追加到 prefill 侧容器的环境变量：空格分隔的 KEY=VALUE，如 VLLM_XXX=1；会覆盖 arch 里 prefill 的 env 同名项；默认空
+NATIVE_VLLM_EXTRA_ENV_PREFILL="${NATIVE_VLLM_EXTRA_ENV_PREFILL:-}"
+# NATIVE_VLLM_EXTRA_ENV_DECODE = 追加到 decode 侧容器的环境变量：空格分隔的 KEY=VALUE，如 VLLM_YYY=1；会覆盖 arch 里 decode 的 env 同名项；默认空
+NATIVE_VLLM_EXTRA_ENV_DECODE="${NATIVE_VLLM_EXTRA_ENV_DECODE:-}"
 # NATIVE_VLLM_READY_TIMEOUT_SECONDS = 单实例就绪（/health 返回 200）的等待上限（秒）；默认 1800
 NATIVE_VLLM_READY_TIMEOUT_SECONDS="${NATIVE_VLLM_READY_TIMEOUT_SECONDS:-1800}"
 # LMCACHE_ENABLE = LMCache 选配开关（1=开启 0=关闭）；仅 PD 形态生效，LMCache 只接 prefill 角色
@@ -133,7 +135,7 @@ pip_trusted_host="${pip_trusted_host%%/*}"
 
 # P/D 的 HTTP keep-alive：镜像默认 5s，而 router 复用同一连接的空闲间隔可能远超 5s
 # （多 DP worker 轮转时尤其明显）→ 服务端先关空闲连接、router 再写请求体就撞 Broken pipe。
-# 调长到 75s 消除该竞态；策略 env 或 NATIVE_VLLM_EXTRA_ENV 仍可覆盖。
+# 调长到 75s 消除该竞态；策略 env 或 NATIVE_VLLM_EXTRA_ENV_{PREFILL,DECODE} 仍可覆盖。
 declare -n hidden_http_keep_alive='NATIVE_VLLM_HTTP_KEEP_ALIVE_SECONDS' 2>/dev/null || true
 
 http_keep_alive_seconds="${hidden_http_keep_alive:-75}"
@@ -643,7 +645,7 @@ with open(f"{out_dir}/args-{out_role}.sh", "w", encoding="utf-8") as handle:
     handle.write(")\n")
 
 with open(f"{out_dir}/env-{out_role}.sh", "w", encoding="utf-8") as handle:
-    # 先写本路线默认的 keep-alive，策略 env 与 NATIVE_VLLM_EXTRA_ENV 后写可覆盖
+    # 先写本路线默认的 keep-alive，策略 env 与 NATIVE_VLLM_EXTRA_ENV_{PREFILL,DECODE} 后写可覆盖
     handle.write(
         "export VLLM_HTTP_TIMEOUT_KEEP_ALIVE="
         f"{shlex.quote(str(http_keep_alive_seconds))}\n"
@@ -1835,7 +1837,7 @@ PY
   check_topology_and_log
 
   # 策略 env 之外，本路线固定追加的运行期环境变量
-  local item xccl_list xccl_item xccl_whl
+  local item extra_env_list xccl_list xccl_item xccl_whl
   ensure_xccl_wheel
   for role in "${roles[@]}"; do
     {
@@ -1857,7 +1859,9 @@ PY
           printf 'export %s\n' "$xccl_item"
         done
       fi
-      for item in $NATIVE_VLLM_EXTRA_ENV; do
+      # 追加环境变量按角色分流：decode/decode_1 → DECODE；prefill*/standalone → PREFILL
+      if [[ "${role%%_*}" == 'decode' ]]; then extra_env_list="$NATIVE_VLLM_EXTRA_ENV_DECODE"; else extra_env_list="$NATIVE_VLLM_EXTRA_ENV_PREFILL"; fi
+      for item in $extra_env_list; do
         [[ -n "$item" ]] && printf 'export %s\n' "$item"
       done
     } >>"$stage_dir/env-$role.sh"
@@ -1965,8 +1969,11 @@ ensure_socat_binary() {
   fi
   local src
   src="$(command -v socat 2>/dev/null || echo /usr/bin/socat)"
-  [[ -x "$src" ]] \
-    || die "目标机缺 socat（端口转发需要），且执行机上也找不到：$src" 2
+  if [[ ! -x "$src" ]]; then
+    # 端口转发不是部署必需项：两边都没 socat 时降级（只提示，不中断部署）
+    warn "目标机与执行机都没有 socat：跳过端口转发（对外端口需手工映射；装好 socat 后重跑即可自动补建）"
+    return 0
+  fi
   log "目标机没有 socat，从执行机分发：$src（端口转发用）"
   install -m 755 "$src" "$stage_dir/socat" || die "复制 socat 到产物目录失败" 2
 }
