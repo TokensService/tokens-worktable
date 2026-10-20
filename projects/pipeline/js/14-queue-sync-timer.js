@@ -430,7 +430,9 @@ function buildSuffixPlan(rc, startIdx, opts){
   const stages=[];
   for(let i=startIdx;i<rc.stages.length;i++){
     const st=rc.stages[i]; if(!st || st.preset) continue;   // 预设任务是页面运行期概念，不进服务端计划
-    if(!st.sched) continue;
+    /* 仅 http 且勾选「本地运行」（sched=null）的阶段留在浏览器本地、不进服务端后缀计划；
+       非 http 阶段（simulate/shell/python/evaltokens）即使存量数据残留 sched=null 也一律进服务端计划（跟随流水线定时计划） */
+    if(st.kind==='http' && !st.sched) continue;
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
@@ -537,7 +539,9 @@ async function handoffSchedSuffix(rc, i){
   let count=0;
   for(let j=i;j<stg.length;j++){
     const st=stg[j]; if(!st||st.preset) continue;
-    if(st.sched) count++;
+    /* 仅 http 且勾选「本地运行」（sched=null）的阶段不算可移交定时阶段；非 http 阶段即使存量残留 sched=null
+       也按支持定时计数并移交服务端（与 buildSuffixPlan 收录口径一致） */
+    if(st.sched || st.kind!=='http') count++;
     rc.nodes[st.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn:Object.assign({},rc.vars||{}),varsOut:{}};
   }
   rcRender(rc,true);

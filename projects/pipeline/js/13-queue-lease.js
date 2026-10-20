@@ -79,10 +79,12 @@ function startSimRun(pl, c){
   replayRec=null; const rt0=$('replayTip'); if(rt0) rt0.textContent='';   // 新运行优先：退出历史回放态
   /* 预设任务按编排位置展开进执行序列（未勾选的不进本次运行），清理/检查/Profiling 与普通阶段统一经 advance 串行推进 */
   const stages = expandRunStages(pl.stages, c.presets);
-  /* 运行时兜底校验：本地运行（不支持定时）阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏）；预设任务不参与定时校验 */
+  /* 运行时兜底校验：本地运行（不支持定时）阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏）；预设任务不参与定时校验。
+     本地运行仅 http 任务类型成立（sched=null 勾选）：非 http 阶段（simulate/shell/python/evaltokens）即使旧数据/分享导入
+     残留 sched=null 也一律按「支持定时」处理（与编辑器 normalizeStageKind/savePlForm 归一一致），不再被误判为需本地运行而拦截。 */
   {
     let started=false, badIdx=-1;
-    for(let i=0;i<stages.length;i++){ if(stages[i].preset) continue; const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
+    for(let i=0;i<stages.length;i++){ if(stages[i].preset) continue; const has=!!stages[i].sched || stages[i].kind!=='http'; if(has) started=true; else if(started){ badIdx=i; break; } }
     if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); releaseNodeLease(c.leaseId, c.leaseIps); drainQueue(); return; }   // 启动校验失败：已拿到的节点租约立即释放
   }
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
@@ -119,8 +121,10 @@ function startSimRun(pl, c){
     let firstSched=-1, hasLocalPrefix=false;
     for(let i=0;i<stages.length;i++){
       const st=stages[i]; if(!st||st.preset) continue;
-      if(st.sched){ if(firstSched<0) firstSched=i; }
-      else if(firstSched<0) hasLocalPrefix=true;   // 定时分界之前存在需本地运行阶段，才需要休眠等待
+      /* 仅 http 且勾选「本地运行」（sched=null）才算需本地运行前缀；非 http 阶段（simulate/shell/python/evaltokens）
+         即使残留 sched=null 也一律按支持定时处理（与编辑器归一一致），落入定时分界之后的服务端后缀 */
+      if(st.sched || st.kind!=='http'){ if(firstSched<0) firstSched=i; }
+      else if(firstSched<0) hasLocalPrefix=true;   // 定时分界之前存在需本地运行（http+sched=null）阶段，才需要休眠等待
     }
     if(firstSched>=0){
       try{
