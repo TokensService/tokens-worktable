@@ -159,12 +159,38 @@ test("任务列表加载失败不得清空现有列表", () => {
     "HTTP 层错误应提示一次，网络抖动仍静默保留旧数据");
 });
 
-test("任务列表支持按用户筛选（与状态 tab / 标签叠加，任一负责人命中）", () => {
-  assert.ok(html.includes('id="userSel"'), "应有用户筛选下拉");
-  assert.ok(html.includes('var userFilter'), "应有用户筛选状态");
-  assert.ok(html.includes("!taskHasAssignee(t, userFilter)"), "visibleTasks 应按任一负责人过滤");
+test("任务列表支持按用户筛选（多选，任一命中；与状态 tab / 标签叠加）", () => {
+  assert.ok(html.includes('id="userPickSearch"'), "应有用户筛选搜索框（多选筛选入口）");
+  assert.ok(html.includes('id="userOptions"'), "应有用户候选多选框区");
+  assert.ok(html.includes('id="userPickChips"'), "应有已选用户 chips");
+  assert.ok(html.includes("var userFilters"), "应有多用户筛选状态（数组）");
+  assert.ok(html.includes("!userFilters.some("), "visibleTasks 应按任一负责人命中过滤（多选）");
   assert.ok(html.includes("syncUserFilter();"), "render 应联动同步用户选项");
   assert.ok(html.includes("knownAssignees()"), "选项应取 启用用户 ∪ 任务负责人（共享模式兜底）");
+  assert.ok(html.includes("data-user-chip"), "已选用户 chip 应可点击移除");
+});
+
+test("用户筛选支持搜索：按用户名子串过滤候选，选项集合变化才重建（15s 轮询不打断）", () => {
+  assert.ok(html.includes("userPickSearchEl.addEventListener('input', drawUserOptions)"), "输入应实时过滤用户候选");
+  assert.ok(html.includes("String(n).toLowerCase().indexOf(q) >= 0"), "应按用户名子串匹配");
+  assert.ok(html.includes("无匹配用户"), "无匹配时应给占位提示");
+  assert.ok(html.includes("userSelSig"), "应以选项签名跳过无变化轮次");
+  assert.ok(html.includes("userFilters = userFilters.filter"), "已选用户从选项消失应自动剔除");
+});
+
+test("负责人多选支持搜索（新建弹窗 / 详情面板）", () => {
+  assert.ok(html.includes('id="fAssigneeSearch"'), "新建弹窗应有负责人搜索框");
+  assert.ok(html.includes('id="dAssigneeSearch"'), "详情面板应有负责人搜索框");
+  assert.ok(html.includes("renderAssigneeChecks(box, selected, disabled, query)"), "负责人渲染应支持搜索词");
+  assert.ok(html.includes("已选用户始终保留在列表中"), "已选用户不应被搜索词过滤掉");
+  assert.ok(html.includes("fAssigneeSearchEl"), "新建弹窗搜索框应绑定输入监听");
+  assert.ok(html.includes("dAssigneeSearchEl"), "详情面板搜索框应绑定输入监听");
+});
+
+test("新建任务兼容历史服务端：同时提交 assignee 与 assignees", () => {
+  assert.ok(html.includes("assignee: assignees[0]"), "新建 POST 应同时携带首负责人（兼容只认单值的历史服务端）");
+  assert.ok(html.includes("assignees: assignees"), "新建 POST 应携带多负责人数组");
+  assert.ok(html.includes("assignee: assignees[0] || ''"), "详情 PATCH 同样应携带兼容字段");
 });
 
 test("任务列表支持按标签筛选（与状态 tab / 用户叠加）", () => {
@@ -219,11 +245,6 @@ test("详情面板内联添加进展（不再依赖弹窗）", () => {
 test("详情表单未保存改动时不被 15s 轮询冲掉（detailEditing 守卫）", () => {
   assert.ok(html.includes("detailEditing"), "应有详情编辑中守卫");
   assert.ok(html.includes("markDetailDirty"), "字段改动应标记脏");
-});
-
-test("用户筛选选项集合变化才重建（15s 轮询不打断展开中的下拉）", () => {
-  assert.ok(html.includes("userSelSig"), "应以选项签名跳过无变化轮次");
-  assert.ok(html.includes("names.indexOf(userFilter) < 0"), "选中用户从选项消失应回落「全部用户」");
 });
 
 test("AI 个人总结：选用户 + 时间段（周/月/年/自定义）生成", () => {
