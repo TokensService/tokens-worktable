@@ -40,6 +40,7 @@ output="$(VLLM_SOURCE_DIR="$source_dir" \
   IMAGE_NAME=myapp \
   SWR_REGISTRY=swr.example.com \
   SWR_REPOSITORY='' \
+  IMAGE_TAG_MODE=explicit \
   IMAGE_TAG=test-tag \
   SWR_USERNAME=test-user \
   SWR_PASSWORD=test-password \
@@ -48,14 +49,21 @@ output="$(VLLM_SOURCE_DIR="$source_dir" \
 grep -Fq 'buildctl --addr' <<<"$output"
 grep -Fq 'ctr -n k8s.io images import' <<<"$output"
 grep -Fq 'ctr -n k8s.io images push' <<<"$output"
-grep -Fq 'swr.example.com/vllm:test-tag' <<<"$output"
+grep -Fq 'swr.example.com/serverlessai/vllm:test-tag' <<<"$output"
 grep -Fq '源码仓库: https://github.com/TokensService/vllm' <<<"$output"
 grep -Fq '源码: '"$source_dir"'@v0.30.0' <<<"$output"
 ! grep -Fq 'test-password' <<<"$output"
 
-indocker_output="$(VLLM_SOURCE_DIR="$source_dir" IMAGE_TAG=test-tag SWR_USERNAME=test-user SWR_PASSWORD=test-password BUILD_ENGINE=indocker INDOCKER_RUNTIME=docker "$SCRIPT" --dry-run 2>&1)"
+indocker_output="$(VLLM_SOURCE_DIR="$source_dir" IMAGE_TAG_MODE=explicit IMAGE_TAG=test-tag SWR_USERNAME=test-user SWR_PASSWORD=test-password BUILD_ENGINE=indocker INDOCKER_RUNTIME=docker "$SCRIPT" --dry-run 2>&1)"
 grep -Fq 'docker run --rm --privileged' <<<"$indocker_output"
 grep -Fq 'local/vllm-indocker-runner:latest' <<<"$indocker_output"
+grep -Fq 'SWR_CREDENTIALS_FILE=/output/.swr-credentials' <<<"$indocker_output"
+grep -Fq 'indocker 推送: docker login' <<<"$indocker_output"
+grep -Fq '远程执行目标: root@192.168.1.101:22' <<<"$indocker_output"
+grep -Fq 'docker push swr.cn-southwest-2.myhuaweicloud.com/serverlessai/vllm:test-tag' <<<"$indocker_output"
+! grep -Fq 'images import' <<<"$indocker_output"
+! grep -Fq 'images push' <<<"$indocker_output"
+! grep -Fq 'OUTPUT_ARCHIVE' <<<"$indocker_output"
 ! grep -Fq 'test-password' <<<"$indocker_output"
 
 echo 'PASS: vLLM BuildKit/ctr image build and push contract'
