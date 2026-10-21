@@ -16,7 +16,15 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
-  BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
+  BUILD_REMOTE_HOST   远程编译主机；设置后通过 SSH 在远端执行本脚本
+  BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
+  BUILD_REMOTE_USER   远程 SSH 用户，默认 root
+  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认使用 192.168.10.6:3128 HTTP 代理
+  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
+  BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
+  BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
+  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
+  BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
@@ -29,12 +37,21 @@ usage() {
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
   SWR_REPOSITORY      SWR 仓库路径，例如 dataartsfabric/vllm
-  IMAGE_TAG           镜像标签，必填
+  IMAGE_TAG           镜像标签；branch-time 模式下由分支名和时间自动生成
+  IMAGE_TAG_MODE      branch-time（默认）或 explicit；explicit 才使用 IMAGE_TAG
   SWR_USERNAME        SWR 用户名，非 dry-run 必填
   SWR_PASSWORD        SWR 密码或 Token，非 dry-run 必填
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
   BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
+  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 shared
+  UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
+  FLASHINFER_PREDOWNLOAD  预下载 flashinfer-jit-cache wheel 并改写 Dockerfile 为本地
+                          wheelhouse 安装，默认 true；false 保留构建内远程安装
+  FLASHINFER_WHEELHOUSE_DIR wheelhouse 目录，默认 /tmp/flashinfer-wheelhouse；
+                          已存在同版本完整 wheel 时跳过下载直接复用
+  FLASHINFER_WHL_INDEX    预下载使用的 wheel 索引，默认按 Dockerfile 的 CUDA_VERSION
+                          推导 https://flashinfer.ai/whl/cu<XX>
 EOF
 }
 
@@ -58,7 +75,19 @@ BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
-BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
+# 默认在当前执行机编译；设置 BUILD_REMOTE_HOST 后才启用远程 SSH 编译。
+BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST:-}"
+BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
+BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
+BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
+BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
+BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
+BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
+BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
+BUILD_NVCC_THREADS_WAS_SET="${BUILD_NVCC_THREADS+x}"
+BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
+BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
+BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
@@ -72,12 +101,34 @@ BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
 CTR_NAMESPACE="${CTR_NAMESPACE:-k8s.io}"
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
 SWR_REPOSITORY="${SWR_REPOSITORY:-vllm}"
-IMAGE_TAG="${IMAGE_TAG:-}"
+IMAGE_TAG_MODE="${IMAGE_TAG_MODE:-branch-time}"
+case "$IMAGE_TAG_MODE" in
+  branch-time|explicit) ;;
+  *) die "IMAGE_TAG_MODE 必须是 branch-time 或 explicit: $IMAGE_TAG_MODE" ;;
+esac
+if [[ -n "${GIT_BRANCH:-}" || "$IMAGE_TAG_MODE" == branch-time ]]; then
+  image_branch="${GIT_BRANCH:-$VLLM_REF}"
+  image_branch="$(printf '%s' "$image_branch" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^[.-]*//')"
+  [[ -n "$image_branch" ]] || image_branch=main
+  IMAGE_TAG="${image_branch}-$(date +%Y%m%d%H%M%S)"
+elif [[ "$IMAGE_TAG_MODE" == explicit ]]; then
+  IMAGE_TAG="${IMAGE_TAG:-}"
+fi
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
+# 两个 Docker 构建阶段会并行安装相同的 Python 依赖。共享 uv 缓存可避免
+# runtime/base 阶段重复下载；uv 自身会对缓存文件加锁。
+BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-shared}"
+UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+# flashinfer-jit-cache wheel 约 1GB，构建内从 flashinfer.ai 拉取经常长时间无输出
+# 甚至卡死。默认先在执行机预下载到 wheelhouse，构建时经附加构建上下文
+# flashinfer-wheelhouse 注入 COPY --from，改为本地安装（wheel 会进入镜像层）。
+FLASHINFER_PREDOWNLOAD="${FLASHINFER_PREDOWNLOAD:-true}"
+FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-/tmp/flashinfer-wheelhouse}"
+FLASHINFER_WHL_INDEX="${FLASHINFER_WHL_INDEX:-}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
 # 仅在明确发现 127.0.0.1:8118 正在监听时自动启用，避免改变无代理环境。
@@ -90,8 +141,95 @@ if [[ -z "${HTTP_PROXY:-${http_proxy:-}}" ]] && command -v ss >/dev/null 2>&1 \
   info_proxy_detected=true
 fi
 
+# apt 的 Release/InRelease 签名不能经过当前本机代理；宿主机可直连这些源时，
+# 将其加入 NO_PROXY，避免代理返回被改写或过期的元数据。
+BUILD_DIRECT_DOWNLOAD_HOSTS="${BUILD_DIRECT_DOWNLOAD_HOSTS:-archive.ubuntu.com,security.ubuntu.com,ppa.launchpadcontent.net,developer.download.nvidia.com}"
+if [[ -n "$BUILD_DIRECT_DOWNLOAD_HOSTS" ]]; then
+  NO_PROXY="${NO_PROXY:-${no_proxy:-}}"
+  NO_PROXY="${NO_PROXY:+$NO_PROXY,}$BUILD_DIRECT_DOWNLOAD_HOSTS"
+  export NO_PROXY
+  export no_proxy="$NO_PROXY"
+fi
+
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
+
+run_remote_build() {
+  [[ "$BUILD_REMOTE_EXEC" == 0 ]] || return 0
+  [[ -n "$BUILD_REMOTE_HOST" ]] || return 0
+  [[ "$BUILD_REMOTE_PORT" =~ ^[1-9][0-9]*$ ]] || die "BUILD_REMOTE_PORT 必须是正整数: $BUILD_REMOTE_PORT"
+
+  local remote_script remote_env remote_target
+  remote_script="/tmp/build_vllm_image_ctr.$$.sh"
+  remote_env="/tmp/build_vllm_image_ctr.$$.env"
+  remote_target="${BUILD_REMOTE_USER}@${BUILD_REMOTE_HOST}"
+  local -a ssh_cmd=(ssh -o BatchMode=yes
+    -o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
+    -p "$BUILD_REMOTE_PORT" "$remote_target")
+
+  local remote_probe remote_cpu remote_mem_mb
+  remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc" 2>/dev/null)" \
+    || die "无法通过 SSH 登录远程编译机: $remote_target"
+  remote_mem_mb="$(awk 'NR==1 {print int($2 / 1024)}' <<<"$remote_probe")"
+  remote_cpu="$(awk 'NR==2 {print $1}' <<<"$remote_probe")"
+  info "远程资源: CPU=${remote_cpu:-unknown}，MemAvailable=${remote_mem_mb:-unknown}MiB"
+  if [[ "$BUILD_REMOTE_AUTO_TUNE" == true && -z "$BUILD_MAX_JOBS_WAS_SET" && -z "$BUILD_NVCC_THREADS_WAS_SET" ]]; then
+    if [[ "${remote_mem_mb:-0}" -lt 32768 ]]; then
+      BUILD_MAX_JOBS=1
+      BUILD_NVCC_THREADS=1
+    elif [[ "${remote_mem_mb:-0}" -lt 65536 ]]; then
+      BUILD_MAX_JOBS=1
+      BUILD_NVCC_THREADS=2
+    else
+      BUILD_MAX_JOBS=2
+      BUILD_NVCC_THREADS=2
+    fi
+    info "远端自动并发: max_jobs=$BUILD_MAX_JOBS，nvcc_threads=$BUILD_NVCC_THREADS"
+  fi
+
+  # 通过 stdin 传脚本和环境文件，避免凭据出现在 SSH 命令行中。
+  local env_name env_value
+  {
+    for env_name in \
+      VLLM_REPO_URL VLLM_REF VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
+      BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_MAX_JOBS BUILD_NVCC_THREADS \
+      BUILD_CPUS BUILD_ARGS BUILD_ENGINE INDOCKER_RUNTIME INDOCKER_RUNNER_IMAGE \
+      INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
+      BUILDX_AUTO_CREATE BUILDKIT_ADDR CTR_NAMESPACE SWR_REGISTRY SWR_REPOSITORY \
+      IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
+      BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING HTTP_PROXY HTTPS_PROXY \
+      NO_PROXY http_proxy https_proxy no_proxy UV_INDEX_URL UV_EXTRA_INDEX_URL \
+      PIP_INDEX_URL PIP_EXTRA_INDEX_URL FLASHINFER_PREDOWNLOAD \
+      FLASHINFER_WHEELHOUSE_DIR FLASHINFER_WHL_INDEX; do
+      if [[ -v "$env_name" ]]; then
+        env_value="${!env_name}"
+        if [[ "$env_name" == HTTP_PROXY || "$env_name" == HTTPS_PROXY ||
+              "$env_name" == http_proxy || "$env_name" == https_proxy ]]; then
+          if [[ -n "$BUILD_REMOTE_PROXY_URL" ]]; then
+            env_value="$BUILD_REMOTE_PROXY_URL"
+          elif [[ "$env_value" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
+            continue
+          fi
+        fi
+        printf '%s=%q\n' "$env_name" "$env_value"
+      fi
+    done
+  } >"$remote_env"
+
+  info "远程编译主机: $remote_target"
+  info "SSH ProxyCommand: $BUILD_REMOTE_PROXY_COMMAND"
+  "${ssh_cmd[@]}" "mkdir -p /tmp && cat > '$remote_script' && chmod 700 '$remote_script'" <"$0"
+  "${ssh_cmd[@]}" "cat > '$remote_env'" <"$remote_env"
+  rm -f "$remote_env"
+  set +e
+  "${ssh_cmd[@]}" "set -a; . '$remote_env'; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash '$remote_script'; rc=\$?; rm -f '$remote_script' '$remote_env'; exit \$rc"
+  local rc=$?
+  set -e
+  rm -f "$remote_env"
+  return "$rc"
+}
+
+run_remote_build
 
 [[ -n "$IMAGE_TAG" ]] || die "必须设置 IMAGE_TAG"
 [[ "$SWR_REGISTRY" != */ ]] || SWR_REGISTRY="${SWR_REGISTRY%/}"
@@ -108,8 +246,16 @@ ensure_source() {
   if [[ -d "$VLLM_SOURCE_DIR/.git" ]]; then
     if [[ "$VLLM_UPDATE" == true ]]; then
       info "更新源码: $VLLM_SOURCE_DIR@$VLLM_REF"
-      git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin
-      git -C "$VLLM_SOURCE_DIR" checkout --detach "$VLLM_REF"
+      if git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin "$VLLM_REF"; then
+        ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
+        [[ -n "$ref_commit" ]] || ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify FETCH_HEAD^{commit} 2>/dev/null || true)"
+      else
+        # 刷新远端引用仅用于诊断，不能将无效引用静默替换成默认分支。
+        git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin || true
+        ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
+      fi
+      [[ -n "$ref_commit" ]] || die "无法解析源码引用: $VLLM_REF（请使用存在的分支、标签或提交，例如 v0.30.0）"
+      git -C "$VLLM_SOURCE_DIR" checkout --detach "$ref_commit"
     fi
   elif [[ -e "$VLLM_SOURCE_DIR" ]]; then
     die "源码目录不是 Git checkout: $VLLM_SOURCE_DIR"
@@ -118,6 +264,123 @@ ensure_source() {
     mkdir -p "$(dirname "$VLLM_SOURCE_DIR")"
     git clone --depth 1 --branch "$VLLM_REF" "$VLLM_REPO_URL" "$VLLM_SOURCE_DIR"
   fi
+}
+
+# 解析 Dockerfile 中 flashinfer-jit-cache 的安装版本与预下载索引。
+# 输出两行：wheel 版本、索引 URL；Dockerfile 不含该安装步骤或无法推导索引时返回 1。
+# BUILD_ARGS 中的 FLASHINFER_VERSION / CUDA_VERSION 显式覆盖优先（与 --build-arg 一致）。
+parse_flashinfer_install() {
+  local dockerfile="$1" version cuda cu_tag override index
+  [[ -f "$dockerfile" ]] || return 1
+  grep -q -- 'flashinfer-jit-cache==' "$dockerfile" || return 1
+  version="$(sed -nE 's/^[[:space:]]*ARG[[:space:]]+FLASHINFER_VERSION=([^[:space:]]+).*/\1/p' "$dockerfile" | head -n 1)"
+  override="$(printf '%s\n' "$BUILD_ARGS" | sed -nE 's/^[[:space:]]*FLASHINFER_VERSION=(.+)$/\1/p' | tail -n 1)"
+  [[ -n "$override" ]] && version="$override"
+  [[ -n "$version" ]] || return 1
+  if [[ -n "$FLASHINFER_WHL_INDEX" ]]; then
+    index="$FLASHINFER_WHL_INDEX"
+  else
+    cuda="$(sed -nE 's/^[[:space:]]*ARG[[:space:]]+CUDA_VERSION=([^[:space:]]+).*/\1/p' "$dockerfile" | head -n 1)"
+    override="$(printf '%s\n' "$BUILD_ARGS" | sed -nE 's/^[[:space:]]*CUDA_VERSION=(.+)$/\1/p' | tail -n 1)"
+    [[ -n "$override" ]] && cuda="$override"
+    cu_tag="$(printf '%s' "$cuda" | cut -d. -f1,2 | tr -d '[:space:].')"
+    [[ "$cu_tag" =~ ^[0-9]+$ ]] || return 1
+    index="https://flashinfer.ai/whl/cu${cu_tag}"
+  fi
+  printf '%s\n%s\n' "$version" "$index"
+}
+
+# 校验 wheel 是完整 zip（识别被截断的残留下载）。缺少 python3 时跳过校验。
+validate_wheel_zip() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$1" 2>/dev/null <<'PY'
+import sys, zipfile
+try:
+    zipfile.ZipFile(sys.argv[1]).close()
+except Exception:
+    sys.exit(1)
+PY
+}
+
+# 预下载 flashinfer-jit-cache wheel 到 wheelhouse；已存在同版本完整 wheel 时直接复用。
+prepare_flashinfer_wheelhouse() {
+  local version="$1" index="$2" wheel
+  local -a wheels=()
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  for wheel in "${wheels[@]}"; do
+    if [[ ! -s "$wheel" ]] || ! validate_wheel_zip "$wheel"; then
+      info "删除不完整的 wheel: $(basename "$wheel")"
+      rm -f "$wheel"
+    fi
+  done
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  if ((${#wheels[@]} == 1)); then
+    info "flashinfer wheelhouse 已就绪: ${wheels[0]}"
+    return 0
+  elif ((${#wheels[@]} > 1)); then
+    die "wheelhouse 中存在多个同版本 wheel，请清理 $FLASHINFER_WHEELHOUSE_DIR"
+  fi
+  mkdir -p "$FLASHINFER_WHEELHOUSE_DIR"
+  info "预下载 flashinfer-jit-cache==${version}（索引 ${index}）"
+  command -v python3 >/dev/null 2>&1 || die "缺少 python3，无法预下载 flashinfer wheel"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip download --no-deps \
+      --index-url "$index" --dest "$FLASHINFER_WHEELHOUSE_DIR" \
+      "flashinfer-jit-cache==${version}"
+  else
+    python3 -m pip --version >/dev/null 2>&1 || die "缺少 pip，无法预下载 flashinfer wheel"
+    python3 -m pip download --disable-pip-version-check --break-system-packages --no-deps \
+      --index-url "$index" --dest "$FLASHINFER_WHEELHOUSE_DIR" \
+      "flashinfer-jit-cache==${version}"
+  fi || die "flashinfer wheel 预下载失败；可把 wheel 手工放入 $FLASHINFER_WHEELHOUSE_DIR，或设 FLASHINFER_PREDOWNLOAD=false 回退构建内远程安装"
+  shopt -s nullglob
+  wheels=("$FLASHINFER_WHEELHOUSE_DIR"/flashinfer_jit_cache-"$version"*.whl)
+  shopt -u nullglob
+  ((${#wheels[@]} == 1)) || die "pip download 后未找到唯一 wheel: flashinfer_jit_cache-${version}*.whl"
+  validate_wheel_zip "${wheels[0]}" || die "下载的 wheel 校验失败: ${wheels[0]}"
+  info "flashinfer wheel 预下载完成: $(basename "${wheels[0]}")"
+}
+
+# 把 Dockerfile 中 flashinfer-jit-cache 的远程安装改写为本地 wheelhouse 安装：
+# 在 ARG FLASHINFER_VERSION 后插入 COPY --from=flashinfer-wheelhouse，并把
+# uv pip install ... --index-url https://flashinfer.ai/... 替换为安装本地 wheel。
+# 安装步骤形态与预期不符时返回 3，调用方保留原 Dockerfile（远程安装）。
+apply_flashinfer_wheelhouse_rewrite() {
+  local src="$1" dst="$2"
+  awk '
+    /^[[:space:]]*ARG[[:space:]]+FLASHINFER_VERSION=/ {
+      print
+      print "COPY --from=flashinfer-wheelhouse / /opt/flashinfer-wheelhouse"
+      inserted_copy = 1
+      next
+    }
+    /uv pip install --system flashinfer-jit-cache==/ {
+      indent = $0
+      sub(/[^[:space:]].*$/, "", indent)
+      if ($0 ~ /\\[[:space:]]*$/) {
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl; \\"
+      } else {
+        print indent "uv pip install --system /opt/flashinfer-wheelhouse/*.whl; \\"
+      }
+      rewrote_install = 1
+      if ($0 ~ /flashinfer\.ai/) index_on_line = 1
+      expect_index = 1
+      next
+    }
+    expect_index && /flashinfer\.ai/ {
+      expect_index = 0
+      dropped_index = 1
+      next
+    }
+    { expect_index = 0; print }
+    END {
+      if (!inserted_copy || !rewrote_install || !(dropped_index || index_on_line)) exit 3
+    }
+  ' "$src" >"$dst"
 }
 
 ensure_buildx_builder() {
@@ -246,6 +509,11 @@ for build_env_name in \
   if [[ -n "$BUILD_PROXY_URL" && ( "$build_env_name" == HTTP_PROXY || "$build_env_name" == HTTPS_PROXY ) ]]; then
     build_env_value="$BUILD_PROXY_URL"
   fi
+  if [[ "$build_env_name" == NO_PROXY && -n "$build_env_value" ]]; then
+    # httpx/puccinialin 在 Rust wheel 构建时无法解析 NO_PROXY 中的
+    # `[::1]`（会误报 Invalid port: ':1]'），使用无括号 IPv6 形式。
+    build_env_value="${build_env_value//\[::1\]/::1}"
+  fi
   [[ -n "$build_env_value" ]] || continue
   if ! printf '%s\n' "$BUILD_ARGS" | grep -Fq "${build_env_name}="; then
     build_args+=("--opt" "build-arg:${build_env_name}=${build_env_value}")
@@ -254,15 +522,20 @@ for build_env_name in \
   fi
 done
 
-if [[ -z "$BUILD_MAX_JOBS" ]]; then
-  cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
-  BUILD_MAX_JOBS=$((cpu_count / 2))
-  ((BUILD_MAX_JOBS >= 1)) || BUILD_MAX_JOBS=1
+cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+if [[ -z "$BUILD_CPUS" ]]; then
+  BUILD_CPUS=$((cpu_count / 2))
+  ((BUILD_CPUS >= 1)) || BUILD_CPUS=1
 fi
 [[ "$BUILD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_MAX_JOBS 必须是正整数: $BUILD_MAX_JOBS"
+[[ "$BUILD_NVCC_THREADS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_NVCC_THREADS 必须是正整数: $BUILD_NVCC_THREADS"
+[[ "$BUILD_CPUS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_CPUS 必须是正整数: $BUILD_CPUS"
 build_args+=("--opt" "build-arg:max_jobs=$BUILD_MAX_JOBS")
+build_args+=("--opt" "build-arg:nvcc_threads=$BUILD_NVCC_THREADS")
 nerdctl_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+nerdctl_build_args+=("--build-arg" "nvcc_threads=$BUILD_NVCC_THREADS")
 docker_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+docker_build_args+=("--build-arg" "nvcc_threads=$BUILD_NVCC_THREADS")
 
 build_cache_args=()
 nerdctl_cache_args=()
@@ -280,8 +553,19 @@ if [[ "$BUILD_CACHE" == true ]]; then
 elif [[ "$BUILD_CACHE" != false ]]; then
   die "BUILD_CACHE 必须是 true 或 false: $BUILD_CACHE"
 fi
+[[ "$FLASHINFER_PREDOWNLOAD" == true || "$FLASHINFER_PREDOWNLOAD" == false ]] \
+  || die "FLASHINFER_PREDOWNLOAD 必须是 true 或 false: $FLASHINFER_PREDOWNLOAD"
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
+if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == auto ]]; then
+  # 预演也按真实执行顺序选择构建器，方便确认是否会命中 Buildx 缓存。
+  if command -v docker >/dev/null && docker info >/dev/null 2>&1 \
+      && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
+  elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
+  elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
+  elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
+  fi
+fi
 if [[ "$DRY_RUN" != true ]]; then
   [[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
   [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
@@ -289,10 +573,14 @@ if [[ "$DRY_RUN" != true ]]; then
   command -v ctr >/dev/null || die "缺少 ctr"
     case "$BUILD_ENGINE" in
     auto)
-      if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=indocker
+      # 优先使用 Buildx：它支持可持久化的本地 layer cache；只有 Buildx
+      # 不可用时才回退到普通 Docker/indocker。显式指定 BUILD_ENGINE 仍优先。
+      if command -v docker >/dev/null && docker info >/dev/null 2>&1 \
+          && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
+      elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
       elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
       elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少可用构建器：请安装可用的 Docker、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
+      else die "缺少可用构建器：请安装 Docker（推荐含 Buildx）、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
       ;;
     buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
     indocker) command -v docker >/dev/null || command -v nerdctl >/dev/null || command -v ctr >/dev/null || die "缺少 indocker 外层运行时" ;;
@@ -317,7 +605,68 @@ if [[ "$DRY_RUN" != true ]]; then
   [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
   mkdir -p "$BUILD_OUTPUT_DIR"
 fi
+
+# --- FlashInfer JIT cache wheelhouse：预下载 wheel，构建内改为本地安装 ---
+flashinfer_wheelhouse_ready=false
+flashinfer_version=""
+flashinfer_index=""
+if [[ "$FLASHINFER_PREDOWNLOAD" == true ]]; then
+  flashinfer_engine_ok=false
+  case "$BUILD_ENGINE" in
+    docker-buildx|nerdctl|buildctl) flashinfer_engine_ok=true ;;
+    docker)
+      if command -v docker >/dev/null 2>&1 && docker build --help 2>&1 | grep -Fq -- '--build-context'; then
+        flashinfer_engine_ok=true
+      else
+        info "警告：docker build 不支持 --build-context，flashinfer wheelhouse 未启用"
+      fi
+      ;;
+    indocker) info "警告：indocker 构建器不支持 flashinfer wheelhouse，保留构建内远程安装" ;;
+    *) ;;
+  esac
+  flashinfer_parse=""
+  if [[ "$flashinfer_engine_ok" == true && -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]]; then
+    flashinfer_parse="$(parse_flashinfer_install "$VLLM_SOURCE_DIR/$DOCKERFILE" || true)"
+  fi
+  if [[ -n "$flashinfer_parse" ]]; then
+    flashinfer_version="${flashinfer_parse%%$'\n'*}"
+    flashinfer_index="${flashinfer_parse#*$'\n'}"
+    if printf '%s\n' "$BUILD_ARGS" | grep -Eq '^[[:space:]]*INSTALL_RUBIN_PRERELEASE=true[[:space:]]*$'; then
+      info "INSTALL_RUBIN_PRERELEASE=true：Dockerfile 跳过 flashinfer 安装，wheelhouse 未启用"
+    elif [[ "$DRY_RUN" == true ]]; then
+      flashinfer_wheelhouse_ready=true
+      info "[预演] flashinfer wheelhouse: 将预下载 flashinfer-jit-cache==${flashinfer_version} 到 $FLASHINFER_WHEELHOUSE_DIR（索引 ${flashinfer_index}）"
+    else
+      prepare_flashinfer_wheelhouse "$flashinfer_version" "$flashinfer_index"
+      flashinfer_wheelhouse_ready=true
+    fi
+  elif [[ "$flashinfer_engine_ok" == true && -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]]; then
+    info "Dockerfile 未找到 flashinfer-jit-cache 安装步骤或无法推导 wheel 索引，跳过 wheelhouse"
+  fi
+fi
+
 archive="$BUILD_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
+build_dockerfile="$VLLM_SOURCE_DIR/$DOCKERFILE"
+if [[ "$BUILD_UV_CACHE_SHARING" != private && "$BUILD_UV_CACHE_SHARING" != locked && "$BUILD_UV_CACHE_SHARING" != shared ]]; then
+  die "BUILD_UV_CACHE_SHARING 必须是 private、locked 或 shared: $BUILD_UV_CACHE_SHARING"
+elif [[ "$DRY_RUN" != true && "$BUILD_ENGINE" != indocker ]]; then
+  # vLLM 的 base/runtime 阶段会并行执行 uv。默认 cache mount 是 shared，
+  # 两个 uv 进程可能争用同一个 wheel lock，等待 300 秒后失败。仅生成
+  # 构建副本并设置并发策略，不修改源码 checkout。
+  build_dockerfile="$BUILD_OUTPUT_DIR/.vllm-Dockerfile-uv-$BUILD_UV_CACHE_SHARING"
+  sed "s#--mount=type=cache,target=/opt/uv/cache#--mount=type=cache,target=/opt/uv/cache,sharing=$BUILD_UV_CACHE_SHARING#g" \
+    "$VLLM_SOURCE_DIR/$DOCKERFILE" > "$build_dockerfile"
+fi
+if [[ "$flashinfer_wheelhouse_ready" == true && "$DRY_RUN" != true ]]; then
+  flashinfer_dockerfile="${build_dockerfile}-flashinfer"
+  if apply_flashinfer_wheelhouse_rewrite "$build_dockerfile" "$flashinfer_dockerfile"; then
+    build_dockerfile="$flashinfer_dockerfile"
+  else
+    rm -f "$flashinfer_dockerfile"
+    info "警告：flashinfer 安装步骤形态与预期不符，保留构建内远程安装"
+    flashinfer_wheelhouse_ready=false
+  fi
+fi
 if [[ -z "$INDOCKER_OUTPUT_DIR" ]]; then INDOCKER_OUTPUT_DIR="$BUILD_OUTPUT_DIR"; fi
 mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true
 if [[ "$BUILD_ENGINE" == indocker ]]; then
@@ -330,30 +679,50 @@ if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == indocker && "$INDOCKER_RUNTIME" =
   fi
 fi
 
+# flashinfer wheelhouse 以附加构建上下文注入，供 COPY --from=flashinfer-wheelhouse
+# 引用；buildctl 用 frontend 选项等价表达。
+flashinfer_context_args=()
+if [[ "$flashinfer_wheelhouse_ready" == true ]]; then
+  case "$BUILD_ENGINE" in
+    docker-buildx|docker|nerdctl)
+      flashinfer_context_args=(--build-context "flashinfer-wheelhouse=$FLASHINFER_WHEELHOUSE_DIR")
+      ;;
+    buildctl)
+      build_args+=("--opt" "context:flashinfer-wheelhouse=$FLASHINFER_WHEELHOUSE_DIR")
+      ;;
+  esac
+fi
+
 if [[ "$BUILD_ENGINE" == nerdctl ]]; then
   build_cmd=(nerdctl -n "$CTR_NAMESPACE" build
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${nerdctl_build_args[@]}"
     "${nerdctl_cache_args[@]}"
+    "${flashinfer_context_args[@]}"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker ]]; then
   build_cmd=(docker build
+    --network "$BUILD_NETWORK"
+    --cpu-period 100000
+    --cpu-quota "$((BUILD_CPUS * 100000))"
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${docker_build_args[@]}"
+    "${flashinfer_context_args[@]}"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
   build_cmd=(docker buildx build --builder "$BUILDX_BUILDER"
     --allow network.host
     --network "$BUILD_NETWORK"
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${docker_build_args[@]}"
     "${docker_buildx_cache_args[@]}"
+    "${flashinfer_context_args[@]}"
     --output "type=oci,dest=$archive"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == indocker ]]; then
@@ -371,6 +740,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
+        -e "BUILD_CPUS=$BUILD_CPUS"
         -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
@@ -384,7 +754,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
-        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_ARGS_TEXT=$indocker_args_text"
+        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
       ;;
@@ -397,7 +767,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --env "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         --env "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
-        --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_ARGS_TEXT=$indocker_args_text"
+        --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE" vllm-indocker-runner)
       ;;
@@ -406,8 +776,8 @@ else
   build_cmd=(buildctl --addr "$BUILDKIT_ADDR" build
     --frontend dockerfile.v0
     --local "context=$context_path"
-    --local "dockerfile=$VLLM_SOURCE_DIR"
-    --opt "filename=$DOCKERFILE"
+    --local "dockerfile=$(dirname "$build_dockerfile")"
+    --opt "filename=$(basename "$build_dockerfile")"
     --opt "platform=$BUILD_PLATFORM"
     "${build_args[@]}"
     "${build_cache_args[@]}"
@@ -420,8 +790,10 @@ info "目标镜像: $IMAGE"
 info "源码仓库: $VLLM_REPO_URL"
 info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
-info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS"
+info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS，nvcc 线程: $BUILD_NVCC_THREADS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
+[[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
+[[ "$flashinfer_wheelhouse_ready" == true ]] && info "flashinfer wheelhouse: $FLASHINFER_WHEELHOUSE_DIR（flashinfer-jit-cache==${flashinfer_version} 本地安装）"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
   info "警告：当前代理仅绑定宿主机回环地址，BuildKit RUN 可能无法访问；请设置 BUILD_PROXY_URL 为构建网络可达的代理地址"
 fi
