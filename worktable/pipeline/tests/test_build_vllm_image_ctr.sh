@@ -62,6 +62,7 @@ grep -Fq '源码: '"$source_dir"'@v0.30.0' <<<"$output"
 
 indocker_output="$(VLLM_SOURCE_DIR="$source_dir" IMAGE_TAG_MODE=explicit IMAGE_TAG=test-tag SWR_USERNAME=test-user SWR_PASSWORD=test-password BUILD_ENGINE=indocker INDOCKER_RUNTIME=docker "$SCRIPT" --dry-run 2>&1)"
 grep -Fq 'docker run --rm --privileged' <<<"$indocker_output"
+grep -Fq -- '-v /mnt/data:/mnt/data' <<<"$indocker_output"
 grep -Fq 'local/vllm-indocker-runner:latest' <<<"$indocker_output"
 grep -Fq 'SWR_CREDENTIALS_FILE=/output/.swr-credentials' <<<"$indocker_output"
 grep -Fq 'indocker 推送: docker login' <<<"$indocker_output"

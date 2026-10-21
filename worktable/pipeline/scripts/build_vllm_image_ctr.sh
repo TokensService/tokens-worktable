@@ -9,7 +9,7 @@ usage() {
 环境变量：
   VLLM_REPO_URL       vLLM 仓库地址，默认 https://github.com/TokensService/vllm.git
   VLLM_REF            分支、标签或提交，默认 main
-  VLLM_DATA_ROOT      构建数据根目录，必须位于已挂载的 /mnt/data，默认 /mnt/data/vllm-build
+  VLLM_DATA_ROOT      构建数据根目录，必须位于 /mnt/data，默认 /mnt/data/vllm-build
   VLLM_SOURCE_DIR     源码目录，默认 $VLLM_DATA_ROOT/source
   VLLM_UPDATE         源码目录存在时是否 fetch/checkout，默认 false
   DOCKERFILE          Dockerfile 路径，相对于源码目录，默认 docker/Dockerfile
@@ -168,9 +168,6 @@ die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
 
 check_build_storage() {
-  command -v mountpoint >/dev/null 2>&1 || die "缺少 mountpoint 命令，无法确认 /mnt/data 已挂载"
-  mountpoint -q /mnt/data || die "/mnt/data 未挂载；拒绝将构建数据写入根分区"
-
   local path
   for path in "$VLLM_DATA_ROOT" "$VLLM_SOURCE_DIR" "$BUILD_OUTPUT_DIR" "$BUILD_CACHE_DIR" "$TMPDIR" "$INDOCKER_OUTPUT_DIR" "$FLASHINFER_WHEELHOUSE_DIR"; do
     [[ -n "$path" ]] || continue
@@ -252,7 +249,7 @@ ASKPASS
   ssh_cmd+=(-o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
     -p "$BUILD_REMOTE_PORT" "$remote_target")
 
-  "${ssh_cmd[@]}" "mountpoint -q /mnt/data && mkdir -p -- $remote_control_dir_q" \
+  "${ssh_cmd[@]}" "mkdir -p -- $remote_control_dir_q" \
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法在远程 /mnt/data 准备控制目录"; }
 
   local remote_probe remote_cpu remote_mem_mb
@@ -314,7 +311,7 @@ ASKPASS
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法传送远程构建脚本"; }
   if [[ -n "$remote_runner_context" ]]; then
     if ! tar -C "$INDOCKER_RUNNER_CONTEXT" -cf - . | \
-        "${ssh_cmd[@]}" "mountpoint -q /mnt/data && mkdir -p -- $remote_runner_context_q && tar -C $remote_runner_context_q -xf -"; then
+        "${ssh_cmd[@]}" "mkdir -p -- $remote_runner_context_q && tar -C $remote_runner_context_q -xf -"; then
       [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"
       die "无法将 indocker runner 上下文传送到远程构建机"
     fi
@@ -860,6 +857,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
   case "$INDOCKER_RUNTIME" in
     docker)
       build_cmd=(docker run --rm --privileged --network "$INDOCKER_NETWORK"
+        -v /mnt/data:/mnt/data
         -v "$VLLM_SOURCE_DIR:/workspace/source:ro"
         -v "$INDOCKER_OUTPUT_DIR:/output"
         -v "$BUILD_CACHE_DIR/dind:/var/lib/docker"
@@ -877,6 +875,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
       ;;
     nerdctl)
       build_cmd=(nerdctl -n "$CTR_NAMESPACE" run --rm --privileged --net-host
+        -v /mnt/data:/mnt/data
         -v "$VLLM_SOURCE_DIR:/workspace/source:ro"
         -v "$INDOCKER_OUTPUT_DIR:/output"
         -v "$BUILD_CACHE_DIR/dind:/var/lib/docker"
@@ -890,6 +889,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
       ;;
     ctr)
       build_cmd=(ctr -n "$CTR_NAMESPACE" run --rm --privileged --net-host
+        --mount "type=bind,src=/mnt/data,dst=/mnt/data,options=rbind:rw"
         --mount "type=bind,src=$VLLM_SOURCE_DIR,dst=/workspace/source,options=rbind:ro"
         --mount "type=bind,src=$INDOCKER_OUTPUT_DIR,dst=/output,options=rbind:rw"
         --mount "type=bind,src=$BUILD_CACHE_DIR/dind,dst=/var/lib/docker,options=rbind:rw"
