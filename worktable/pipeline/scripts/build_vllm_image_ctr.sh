@@ -253,10 +253,10 @@ ASKPASS
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法在远程 /mnt/data 准备控制目录"; }
 
   local remote_probe remote_cpu remote_mem_mb
-  remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc")" \
+  remote_probe="$("${ssh_cmd[@]}" "grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; nproc")" \
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法通过 SSH 登录远程编译机: $remote_target"; }
-  remote_mem_mb="$(awk 'NR==1 {print int($2 / 1024)}' <<<"$remote_probe")"
-  remote_cpu="$(awk 'NR==2 {print $1}' <<<"$remote_probe")"
+  remote_mem_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' <<<"$remote_probe")"
+  remote_cpu="$(tail -n1 <<<"$remote_probe")"
   info "远程资源: CPU=${remote_cpu:-unknown}，MemAvailable=${remote_mem_mb:-unknown}MiB"
   if [[ "$BUILD_REMOTE_AUTO_TUNE" == true && -z "$BUILD_MAX_JOBS_WAS_SET" && -z "$BUILD_NVCC_THREADS_WAS_SET" ]]; then
     if [[ "${remote_mem_mb:-0}" -lt 32768 ]]; then
