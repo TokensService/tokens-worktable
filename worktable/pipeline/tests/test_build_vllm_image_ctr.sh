@@ -71,5 +71,6 @@ grep -Fq 'docker push swr.cn-southwest-2.myhuaweicloud.com/serverlessai/vllm:tes
 ! grep -Fq 'images push' <<<"$indocker_output"
 ! grep -Fq 'OUTPUT_ARCHIVE' <<<"$indocker_output"
 ! grep -Fq 'test-password' <<<"$indocker_output"
+! grep -Fq 'Pass@2026' <<<"$indocker_output"
 
 echo 'PASS: vLLM BuildKit/ctr image build and push contract'

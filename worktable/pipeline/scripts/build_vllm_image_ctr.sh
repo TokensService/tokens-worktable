@@ -21,7 +21,7 @@ usage() {
   BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
   BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认经 192.168.10.6:3128 HTTP 代理转发
-  BUILD_REMOTE_PASSWORD 远程 SSH 密码；建议由流水线秘密变量注入，留空时使用 SSH 密钥
+  BUILD_REMOTE_PASSWORD 远程 SSH 密码；默认使用临时机器密码，可由流水线秘密变量覆盖
   BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
@@ -84,7 +84,9 @@ BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-115.120.93.136}"
 BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
 BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
-BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-}"
+# Temporary remote machine password for the dev4 rollout. Rotate and remove
+# this fallback after the rollout; a pipeline secret can override it.
+BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-Pass@2026}"
 BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
 BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
