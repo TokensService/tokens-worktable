@@ -9,17 +9,19 @@ usage() {
 环境变量：
   VLLM_REPO_URL       vLLM 仓库地址，默认 https://github.com/TokensService/vllm.git
   VLLM_REF            分支、标签或提交，默认 main
-  VLLM_SOURCE_DIR     源码目录，默认 /tmp/vllm-build
+  VLLM_DATA_ROOT      构建数据根目录，必须位于已挂载的 /mnt/data，默认 /mnt/data/vllm-build
+  VLLM_SOURCE_DIR     源码目录，默认 $VLLM_DATA_ROOT/source
   VLLM_UPDATE         源码目录存在时是否 fetch/checkout，默认 false
   DOCKERFILE          Dockerfile 路径，相对于源码目录，默认 docker/Dockerfile
   BUILD_CONTEXT       构建上下文，相对于源码目录，默认 .
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
-  BUILD_REMOTE_HOST   远程编译主机；设置后通过 SSH 在远端执行本脚本
-  BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
+  BUILD_REMOTE_HOST   远程编译主机，默认 192.168.1.101；设置空值可本机编译
+  BUILD_REMOTE_PORT   远程 SSH 端口，默认 22
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
-  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认使用 192.168.10.6:3128 HTTP 代理
+  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认 none（直连）；可按网络环境覆盖
+  BUILD_REMOTE_PASSWORD 远程 SSH 密码；建议由流水线秘密变量注入，留空时使用 SSH 密钥
   BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
@@ -29,20 +31,21 @@ usage() {
   BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
-  INDOCKER_OUTPUT_DIR runner 输出目录，默认 BUILD_OUTPUT_DIR
+  INDOCKER_RUNNER_CONTEXT indocker runner 构建上下文，默认脚本目录下的 indocker
+  INDOCKER_OUTPUT_DIR runner 日志目录，默认 BUILD_OUTPUT_DIR
   INDOCKER_NETWORK    runner 网络，默认 host
   BUILDX_BUILDER      Docker Buildx builder 名称，默认 vllm-builder
   BUILDX_AUTO_CREATE  docker-buildx 分支是否自动创建/配置 builder，默认 true
   BUILDKIT_ADDR       BuildKit 地址，默认 unix:///run/buildkit/buildkitd.sock
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
-  SWR_REPOSITORY      SWR 仓库路径，例如 dataartsfabric/vllm
+  SWR_REPOSITORY      SWR 仓库路径，默认 serverlessai/vllm
   IMAGE_TAG           镜像标签；branch-time 模式下由分支名和时间自动生成
   IMAGE_TAG_MODE      branch-time（默认）或 explicit；explicit 才使用 IMAGE_TAG
   SWR_USERNAME        SWR 用户名，非 dry-run 必填
   SWR_PASSWORD        SWR 密码或 Token，非 dry-run 必填
-  BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
-  BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
+  BUILD_OUTPUT_DIR    临时 OCI 包和 indocker 日志目录，默认 $VLLM_DATA_ROOT/image-build
+  BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 $VLLM_DATA_ROOT/cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
   BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 locked（避免并行阶段争用 wheel 锁）
   UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
@@ -68,18 +71,20 @@ done
 
 VLLM_REPO_URL="${VLLM_REPO_URL:-${GIT_URL:-https://github.com/TokensService/vllm.git}}"
 VLLM_REF="${VLLM_REF:-${GIT_BRANCH:-main}}"
-VLLM_SOURCE_DIR="${VLLM_SOURCE_DIR:-/tmp/vllm-build}"
+VLLM_DATA_ROOT="${VLLM_DATA_ROOT:-/mnt/data/vllm-build}"
+VLLM_SOURCE_DIR="${VLLM_SOURCE_DIR:-$VLLM_DATA_ROOT/source}"
 VLLM_UPDATE="${VLLM_UPDATE:-false}"
 DOCKERFILE="${DOCKERFILE:-docker/Dockerfile}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
-# 默认在当前执行机编译；设置 BUILD_REMOTE_HOST 后才启用远程 SSH 编译。
-BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST:-}"
-BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
+# 流水线默认经 SSH 将构建转发到 101；设置 BUILD_REMOTE_HOST='' 可在当前机编译。
+BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-192.168.1.101}"
+BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-22}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
-BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
+BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-none}"
+BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-}"
 BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
 BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
@@ -92,6 +97,7 @@ BUILD_ARGS="${BUILD_ARGS:-torch_cuda_arch_list=}"
 BUILD_ENGINE="${BUILD_ENGINE:-indocker}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
+INDOCKER_RUNNER_CONTEXT="${INDOCKER_RUNNER_CONTEXT:-$SCRIPT_DIR/indocker}"
 INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-}"
 INDOCKER_NETWORK="${INDOCKER_NETWORK:-host}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}"
@@ -100,7 +106,7 @@ BUILDX_AUTO_CREATE="${BUILDX_AUTO_CREATE:-true}"
 BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
 CTR_NAMESPACE="${CTR_NAMESPACE:-k8s.io}"
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
-SWR_REPOSITORY="${SWR_REPOSITORY:-vllm}"
+SWR_REPOSITORY="${SWR_REPOSITORY:-serverlessai/vllm}"
 IMAGE_TAG_MODE="${IMAGE_TAG_MODE:-branch-time}"
 case "$IMAGE_TAG_MODE" in
   branch-time|explicit) ;;
@@ -114,11 +120,16 @@ if [[ -n "${GIT_BRANCH:-}" || "$IMAGE_TAG_MODE" == branch-time ]]; then
 elif [[ "$IMAGE_TAG_MODE" == explicit ]]; then
   IMAGE_TAG="${IMAGE_TAG:-}"
 fi
-SWR_USERNAME="${SWR_USERNAME:-}"
-SWR_PASSWORD="${SWR_PASSWORD:-}"
-BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
-BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
+# Temporary SWR credentials for the dev4 image-publish job. Pipeline variables
+# may override these defaults; rotate/remove them after the temporary rollout.
+SWR_USERNAME="${SWR_USERNAME:-cn-southwest-2@HPUAGGFMVQVOGNHA1UJV}"
+SWR_PASSWORD="${SWR_PASSWORD:-6d9883a2f64076619ccd14925ae4415c78d0e05f465c7d0e3b2eb06f34dde296}"
+BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-$VLLM_DATA_ROOT/image-build}"
+BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-$VLLM_DATA_ROOT/cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
+TMPDIR="${TMPDIR:-$VLLM_DATA_ROOT/tmp}"
+INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-$BUILD_OUTPUT_DIR}"
+export TMPDIR
 # 两个 Docker 构建阶段会并行安装相同的 Python 依赖。共享 uv 缓存可避免
 # runtime/base 阶段重复下载；uv 自身会对缓存文件加锁。
 BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-locked}"
@@ -127,7 +138,7 @@ UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 # 甚至卡死。默认先在执行机预下载到 wheelhouse，构建时经附加构建上下文
 # flashinfer-wheelhouse 注入 COPY --from，改为本地安装（wheel 会进入镜像层）。
 FLASHINFER_PREDOWNLOAD="${FLASHINFER_PREDOWNLOAD:-true}"
-FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-/tmp/flashinfer-wheelhouse}"
+FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-$VLLM_DATA_ROOT/flashinfer-wheelhouse}"
 FLASHINFER_WHL_INDEX="${FLASHINFER_WHL_INDEX:-}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
@@ -154,22 +165,97 @@ fi
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
 
+check_build_storage() {
+  command -v mountpoint >/dev/null 2>&1 || die "缺少 mountpoint 命令，无法确认 /mnt/data 已挂载"
+  mountpoint -q /mnt/data || die "/mnt/data 未挂载；拒绝将构建数据写入根分区"
+
+  local path
+  for path in "$VLLM_DATA_ROOT" "$VLLM_SOURCE_DIR" "$BUILD_OUTPUT_DIR" "$BUILD_CACHE_DIR" "$TMPDIR" "$INDOCKER_OUTPUT_DIR" "$FLASHINFER_WHEELHOUSE_DIR"; do
+    [[ -n "$path" ]] || continue
+    case "$path" in
+      /mnt/data/*) ;;
+      *) die "构建数据路径必须位于 /mnt/data 下: $path" ;;
+    esac
+  done
+}
+
+migrate_legacy_dir() {
+  local old_path="$1" new_path="$2"
+  [[ -d "$old_path" ]] || return 0
+  if [[ -e "$new_path" ]]; then
+    info "旧数据保留在 $old_path（目标目录已存在: $new_path）"
+    return 0
+  fi
+  mkdir -p "$(dirname "$new_path")"
+  info "将旧构建数据迁移到 /mnt/data: $old_path -> $new_path"
+  mv -- "$old_path" "$new_path" || die "迁移失败: $old_path -> $new_path"
+}
+
+prepare_build_storage() {
+  check_build_storage
+  mkdir -p "$VLLM_DATA_ROOT"
+  if [[ "$VLLM_SOURCE_DIR" == "$VLLM_DATA_ROOT/source" ]]; then
+    migrate_legacy_dir /tmp/vllm-build "$VLLM_SOURCE_DIR"
+  fi
+  if [[ "$BUILD_OUTPUT_DIR" == "$VLLM_DATA_ROOT/image-build" ]]; then
+    migrate_legacy_dir /tmp/vllm-image-build "$BUILD_OUTPUT_DIR"
+  fi
+  if [[ "$BUILD_CACHE_DIR" == "$VLLM_DATA_ROOT/cache" ]]; then
+    migrate_legacy_dir /tmp/vllm-build-cache "$BUILD_CACHE_DIR"
+  fi
+  mkdir -p "$VLLM_DATA_ROOT" "$TMPDIR" "$BUILD_OUTPUT_DIR" "$BUILD_CACHE_DIR" "$FLASHINFER_WHEELHOUSE_DIR"
+}
+
 run_remote_build() {
   [[ "$BUILD_REMOTE_EXEC" == 0 ]] || return 0
   [[ -n "$BUILD_REMOTE_HOST" ]] || return 0
+  [[ "$DRY_RUN" != true ]] || return 0
   [[ "$BUILD_REMOTE_PORT" =~ ^[1-9][0-9]*$ ]] || die "BUILD_REMOTE_PORT 必须是正整数: $BUILD_REMOTE_PORT"
 
-  local remote_script remote_env remote_target
-  remote_script="/tmp/build_vllm_image_ctr.$$.sh"
-  remote_env="/tmp/build_vllm_image_ctr.$$.env"
+  local remote_script remote_env remote_target remote_runner_context remote_runner_hash
+  local remote_runner_context_q remote_control_dir_q remote_script_q remote_env_q remote_askpass
+  case "$VLLM_DATA_ROOT" in
+    /mnt/data/*) ;;
+    *) die "远程构建数据目录必须位于 /mnt/data 下: $VLLM_DATA_ROOT" ;;
+  esac
+  remote_script="$VLLM_DATA_ROOT/control/build_vllm_image_ctr.$$.sh"
+  remote_env="$VLLM_DATA_ROOT/control/build_vllm_image_ctr.$$.env"
+  printf -v remote_control_dir_q '%q' "$VLLM_DATA_ROOT/control"
+  printf -v remote_script_q '%q' "$remote_script"
+  printf -v remote_env_q '%q' "$remote_env"
   remote_target="${BUILD_REMOTE_USER}@${BUILD_REMOTE_HOST}"
-  local -a ssh_cmd=(ssh -o BatchMode=yes
-    -o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
+  remote_runner_context=""
+  if [[ "$BUILD_ENGINE" == indocker ]]; then
+    remote_runner_hash="$(sha256sum "$INDOCKER_RUNNER_CONTEXT/Dockerfile" "$INDOCKER_RUNNER_CONTEXT/entrypoint.sh" | sha256sum | awk '{print $1}')"
+    remote_runner_context="$VLLM_DATA_ROOT/indocker-runner-$remote_runner_hash"
+    printf -v remote_runner_context_q '%q' "$remote_runner_context"
+  fi
+
+  local -a ssh_cmd
+  remote_askpass=""
+  if [[ -n "$BUILD_REMOTE_PASSWORD" ]]; then
+    command -v setsid >/dev/null 2>&1 || die "使用 BUILD_REMOTE_PASSWORD 需要 setsid"
+    remote_askpass="$(mktemp /dev/shm/vllm-ssh-askpass.XXXXXX)" || die "无法在 /dev/shm 创建 SSH askpass"
+    cat >"$remote_askpass" <<'ASKPASS'
+#!/bin/sh
+printf '%s\n' "$BUILD_REMOTE_PASSWORD"
+ASKPASS
+    chmod 700 "$remote_askpass"
+    export BUILD_REMOTE_PASSWORD
+    ssh_cmd=(setsid -w env DISPLAY=:0 SSH_ASKPASS="$remote_askpass" SSH_ASKPASS_REQUIRE=force
+      ssh -o BatchMode=no -o PubkeyAuthentication=no -o PreferredAuthentications=password)
+  else
+    ssh_cmd=(ssh -o BatchMode=yes)
+  fi
+  ssh_cmd+=(-o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
     -p "$BUILD_REMOTE_PORT" "$remote_target")
+
+  "${ssh_cmd[@]}" "mountpoint -q /mnt/data && mkdir -p -- $remote_control_dir_q" \
+    || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法在远程 /mnt/data 准备控制目录"; }
 
   local remote_probe remote_cpu remote_mem_mb
   remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc" 2>/dev/null)" \
-    || die "无法通过 SSH 登录远程编译机: $remote_target"
+    || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法通过 SSH 登录远程编译机: $remote_target"; }
   remote_mem_mb="$(awk 'NR==1 {print int($2 / 1024)}' <<<"$remote_probe")"
   remote_cpu="$(awk 'NR==2 {print $1}' <<<"$remote_probe")"
   info "远程资源: CPU=${remote_cpu:-unknown}，MemAvailable=${remote_mem_mb:-unknown}MiB"
@@ -187,22 +273,25 @@ run_remote_build() {
     info "远端自动并发: max_jobs=$BUILD_MAX_JOBS，nvcc_threads=$BUILD_NVCC_THREADS"
   fi
 
-  # 通过 stdin 传脚本和环境文件，避免凭据出现在 SSH 命令行中。
+  # 通过 stdin 传递环境文件，避免凭据出现在 SSH 命令行或流水线磁盘上。
   local env_name env_value
   {
     for env_name in \
-      VLLM_REPO_URL VLLM_REF VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
+      VLLM_REPO_URL VLLM_REF VLLM_DATA_ROOT VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
       BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_MAX_JOBS BUILD_NVCC_THREADS \
       BUILD_CPUS BUILD_ARGS BUILD_ENGINE INDOCKER_RUNTIME INDOCKER_RUNNER_IMAGE \
-      INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
+      INDOCKER_RUNNER_CONTEXT INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
       BUILDX_AUTO_CREATE BUILDKIT_ADDR CTR_NAMESPACE SWR_REGISTRY SWR_REPOSITORY \
       IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
-      BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING HTTP_PROXY HTTPS_PROXY \
+      BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING TMPDIR HTTP_PROXY HTTPS_PROXY \
       NO_PROXY http_proxy https_proxy no_proxy UV_INDEX_URL UV_EXTRA_INDEX_URL \
-      PIP_INDEX_URL PIP_EXTRA_INDEX_URL FLASHINFER_PREDOWNLOAD \
+      PIP_INDEX_URL PIP_EXTRA_INDEX_URL BUILD_DIRECT_DOWNLOAD_HOSTS FLASHINFER_PREDOWNLOAD \
       FLASHINFER_WHEELHOUSE_DIR FLASHINFER_WHL_INDEX; do
       if [[ -v "$env_name" ]]; then
         env_value="${!env_name}"
+        if [[ "$env_name" == INDOCKER_RUNNER_CONTEXT && -n "$remote_runner_context" ]]; then
+          env_value="$remote_runner_context"
+        fi
         if [[ "$env_name" == HTTP_PROXY || "$env_name" == HTTPS_PROXY ||
               "$env_name" == http_proxy || "$env_name" == https_proxy ]]; then
           if [[ -n "$BUILD_REMOTE_PROXY_URL" ]]; then
@@ -214,19 +303,27 @@ run_remote_build() {
         printf '%s=%q\n' "$env_name" "$env_value"
       fi
     done
-  } >"$remote_env"
+  } | "${ssh_cmd[@]}" "umask 077 && cat > $remote_env_q && chmod 600 $remote_env_q" \
+    || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法安全传递远程构建环境"; }
 
   info "远程编译主机: $remote_target"
   info "SSH ProxyCommand: $BUILD_REMOTE_PROXY_COMMAND"
-  "${ssh_cmd[@]}" "mkdir -p /tmp && cat > '$remote_script' && chmod 700 '$remote_script'" <"$0"
-  "${ssh_cmd[@]}" "cat > '$remote_env'" <"$remote_env"
-  rm -f "$remote_env"
+  "${ssh_cmd[@]}" "umask 077 && cat > $remote_script_q && chmod 700 $remote_script_q" <"$0" \
+    || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法传送远程构建脚本"; }
+  if [[ -n "$remote_runner_context" ]]; then
+    if ! tar -C "$INDOCKER_RUNNER_CONTEXT" -cf - . | \
+        "${ssh_cmd[@]}" "mountpoint -q /mnt/data && mkdir -p -- $remote_runner_context_q && tar -C $remote_runner_context_q -xf -"; then
+      [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"
+      die "无法将 indocker runner 上下文传送到远程构建机"
+    fi
+  fi
+  info "通过 SSH 转发构建任务到远程编译机"
   set +e
-  "${ssh_cmd[@]}" "set -a; . '$remote_env'; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash '$remote_script'; rc=\$?; rm -f '$remote_script' '$remote_env'; exit \$rc"
+  "${ssh_cmd[@]}" "set -a; . $remote_env_q; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash $remote_script_q; rc=\$?; rm -f $remote_script_q $remote_env_q; exit \$rc"
   local rc=$?
   set -e
-  rm -f "$remote_env"
-  return "$rc"
+  [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"
+  exit "$rc"
 }
 
 run_remote_build
@@ -432,9 +529,11 @@ resolve_indocker_runtime() {
 }
 
 ensure_indocker_runner() {
-  local runner_context="$SCRIPT_DIR/indocker"
+  local runner_context="$INDOCKER_RUNNER_CONTEXT"
   local -a runner_build_args=(--network=host)
-  local proxy_name proxy_value
+  local proxy_name proxy_value runner_hash current_hash
+  local runner_hash_label="com.tokensservice.vllm.indocker-source-sha256"
+  runner_hash="$(sha256sum "$runner_context/Dockerfile" "$runner_context/entrypoint.sh" | sha256sum | awk '{print $1}')"
 
   # The runner itself installs apk packages while it is being built.  Pass the
   # same proxy settings used by the inner dockerd; otherwise a localhost proxy
@@ -446,15 +545,17 @@ ensure_indocker_runner() {
   runner_build_args+=(--build-arg "ALPINE_MIRROR=${ALPINE_MIRROR}")
   case "$INDOCKER_RUNTIME" in
     docker)
-      if ! docker image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
+      current_hash="$(docker image inspect --format "{{ index .Config.Labels \"$runner_hash_label\" }}" "$INDOCKER_RUNNER_IMAGE" 2>/dev/null || true)"
+      if [[ "$current_hash" != "$runner_hash" ]]; then
         info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        docker build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
+        docker build "${runner_build_args[@]}" --label "$runner_hash_label=$runner_hash" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       fi
       ;;
     nerdctl)
-      if ! nerdctl -n "$CTR_NAMESPACE" image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
+      current_hash="$(nerdctl -n "$CTR_NAMESPACE" image inspect --format "{{ index .Config.Labels \"$runner_hash_label\" }}" "$INDOCKER_RUNNER_IMAGE" 2>/dev/null || true)"
+      if [[ "$current_hash" != "$runner_hash" ]]; then
         info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        nerdctl -n "$CTR_NAMESPACE" build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
+        nerdctl -n "$CTR_NAMESPACE" build "${runner_build_args[@]}" --label "$runner_hash_label=$runner_hash" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       fi
       ;;
     ctr)
@@ -577,8 +678,8 @@ if [[ "$DRY_RUN" != true ]]; then
   [[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
   [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
   command -v git >/dev/null || die "缺少 git"
-  command -v ctr >/dev/null || die "缺少 ctr"
-    case "$BUILD_ENGINE" in
+  prepare_build_storage
+  case "$BUILD_ENGINE" in
     auto)
       # 显式选择 auto 时优先使用 Docker-in-Docker；需要 Buildx 时请显式设置 BUILD_ENGINE=docker-buildx。
       if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=indocker
@@ -605,11 +706,13 @@ if [[ "$DRY_RUN" != true ]]; then
   if [[ "$BUILD_ENGINE" == indocker ]]; then
     resolve_indocker_runtime
     ensure_indocker_runner
+  else
+    command -v ctr >/dev/null || die "缺少 ctr"
   fi
   ensure_source
   [[ -d "$context_path" ]] || die "构建上下文不存在: $context_path"
   [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
-  mkdir -p "$BUILD_OUTPUT_DIR"
+  mkdir -p "$BUILD_OUTPUT_DIR" "$INDOCKER_OUTPUT_DIR"
 fi
 
 # --- FlashInfer JIT cache wheelhouse：预下载 wheel，构建内改为本地安装 ---
@@ -682,11 +785,6 @@ if [[ "$flashinfer_wheelhouse_ready" == true && "$DRY_RUN" != true ]]; then
     flashinfer_wheelhouse_ready=false
   fi
 fi
-if [[ -z "$INDOCKER_OUTPUT_DIR" ]]; then INDOCKER_OUTPUT_DIR="$BUILD_OUTPUT_DIR"; fi
-mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true
-if [[ "$BUILD_ENGINE" == indocker ]]; then
-  archive="$INDOCKER_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
-fi
 if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == indocker && "$INDOCKER_RUNTIME" == auto ]]; then
   if command -v docker >/dev/null; then INDOCKER_RUNTIME=docker
   elif command -v nerdctl >/dev/null; then INDOCKER_RUNTIME=nerdctl
@@ -706,6 +804,20 @@ if [[ "$flashinfer_wheelhouse_ready" == true ]]; then
       build_args+=("--opt" "context:flashinfer-wheelhouse=$FLASHINFER_WHEELHOUSE_DIR")
       ;;
   esac
+fi
+
+indocker_auth_file=""
+indocker_auth_container_path="/output/.swr-credentials"
+cleanup_indocker_auth_file() {
+  [[ -z "$indocker_auth_file" ]] || rm -f -- "$indocker_auth_file"
+}
+if [[ "$BUILD_ENGINE" == indocker && "$DRY_RUN" != true ]]; then
+  [[ "$SWR_USERNAME" != *$'\n'* && "$SWR_PASSWORD" != *$'\n'* ]] || die "SWR 凭据不能包含换行"
+  indocker_auth_file="$(mktemp "$INDOCKER_OUTPUT_DIR/.swr-credentials.XXXXXX")"
+  chmod 600 "$indocker_auth_file"
+  printf '%s\n%s\n' "$SWR_USERNAME" "$SWR_PASSWORD" > "$indocker_auth_file"
+  indocker_auth_container_path="/output/$(basename "$indocker_auth_file")"
+  trap cleanup_indocker_auth_file EXIT
 fi
 
 if [[ "$BUILD_ENGINE" == nerdctl ]]; then
@@ -753,7 +865,8 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "SOURCE_DIR=/workspace/source"
         -e "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
+        -e "SWR_REGISTRY=$SWR_REGISTRY"
+        -e "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
         -e "BUILD_CPUS=$BUILD_CPUS"
         -e "BUILD_ARGS_TEXT=$indocker_args_text"
@@ -768,7 +881,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "IMAGE_REF=$IMAGE" -e "SOURCE_DIR=/workspace/source"
         -e "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
+        -e "SWR_REGISTRY=$SWR_REGISTRY" -e "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
         -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
@@ -781,7 +894,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --env "IMAGE_REF=$IMAGE" --env "SOURCE_DIR=/workspace/source"
         --env "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        --env "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
+        --env "SWR_REGISTRY=$SWR_REGISTRY" --env "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
         --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE" vllm-indocker-runner)
@@ -798,10 +911,8 @@ else
     "${build_cache_args[@]}"
     --output "type=oci,name=$IMAGE,dest=$archive")
 fi
-import_cmd=(ctr -n "$CTR_NAMESPACE" images import "$archive")
-push_cmd=(ctr -n "$CTR_NAMESPACE" images push --user "${SWR_USERNAME}:***" "$IMAGE")
-
 info "目标镜像: $IMAGE"
+[[ -z "$BUILD_REMOTE_HOST" ]] || info "远程执行目标: $BUILD_REMOTE_USER@$BUILD_REMOTE_HOST:$BUILD_REMOTE_PORT"
 info "源码仓库: $VLLM_REPO_URL"
 info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
@@ -816,37 +927,50 @@ if [[ "$BUILD_ENGINE" == docker && "$BUILD_CACHE" == true ]]; then
   info "Docker Buildx 不可用，使用 Docker daemon 内置层缓存；如需 BUILD_CACHE_DIR，请安装 Buildx"
 fi
 info "构建命令: $(quote_cmd "${build_cmd[@]}")"
-info "导入命令: $(quote_cmd "${import_cmd[@]}")"
-info "推送命令: $(quote_cmd "${push_cmd[@]}")"
+if [[ "$BUILD_ENGINE" == indocker ]]; then
+  info "indocker 推送: docker login $SWR_REGISTRY --password-stdin && docker push $IMAGE"
+else
+  import_cmd=(ctr -n "$CTR_NAMESPACE" images import "$archive")
+  push_cmd=(ctr -n "$CTR_NAMESPACE" images push --user "${SWR_USERNAME}:***" "$IMAGE")
+  info "导入命令: $(quote_cmd "${import_cmd[@]}")"
+  info "推送命令: $(quote_cmd "${push_cmd[@]}")"
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
   exit 0
 fi
 
-info "开始在流水线执行机编译镜像"
+info "开始执行镜像构建"
+if [[ "$BUILD_ENGINE" == indocker ]]; then
+  rm -f "$INDOCKER_OUTPUT_DIR/push-success"
+fi
 "${build_cmd[@]}"
 if [[ "$BUILD_ENGINE" == indocker ]]; then
-  [[ -s "$archive" ]] || die "indocker 未生成 OCI/tar 包: $archive"
-  info "导入 indocker 镜像归档: $archive"
-  ctr -n "$CTR_NAMESPACE" images import "$archive"
-  if ! ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "$IMAGE" \
-      && ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "docker.io/$IMAGE"; then
-    ctr -n "$CTR_NAMESPACE" images tag "docker.io/$IMAGE" "$IMAGE"
-  fi
-elif [[ "$BUILD_ENGINE" == buildctl || "$BUILD_ENGINE" == docker-buildx ]]; then
-  [[ -s "$archive" ]] || die "BuildKit 未生成 OCI 包: $archive"
-  info "导入镜像到 containerd namespace=$CTR_NAMESPACE"
-  ctr -n "$CTR_NAMESPACE" images import --base-name "$IMAGE" "$archive"
-elif [[ "$BUILD_ENGINE" == nerdctl ]]; then
-  info "nerdctl 已直接将镜像写入 containerd namespace=$CTR_NAMESPACE"
+  success_marker="$INDOCKER_OUTPUT_DIR/push-success"
+  [[ -s "$success_marker" ]] || die "indocker 未确认镜像推送成功；请检查 $INDOCKER_OUTPUT_DIR/build.log"
+  [[ "$(cat "$success_marker")" == "$IMAGE" ]] || die "indocker 推送的镜像引用与目标不一致"
+  cleanup_indocker_auth_file
+  info "镜像推送成功: $IMAGE"
 else
-  info "导出 Docker 镜像并导入 containerd namespace=$CTR_NAMESPACE"
-  docker save "$IMAGE" | ctr -n "$CTR_NAMESPACE" images import -
-fi
-if ! ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "$IMAGE"; then
-  ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "docker.io/$IMAGE" || die "镜像未成功导入: $IMAGE"
-fi
+  if [[ "$BUILD_ENGINE" == buildctl || "$BUILD_ENGINE" == docker-buildx ]]; then
+    [[ -s "$archive" ]] || die "BuildKit 未生成 OCI 包: $archive"
+    info "导入镜像到 containerd namespace=$CTR_NAMESPACE"
+    ctr -n "$CTR_NAMESPACE" images import --base-name "$IMAGE" "$archive"
+  elif [[ "$BUILD_ENGINE" == nerdctl ]]; then
+    info "nerdctl 已直接将镜像写入 containerd namespace=$CTR_NAMESPACE"
+  else
+    info "导出 Docker 镜像并导入 containerd namespace=$CTR_NAMESPACE"
+    docker save "$IMAGE" | ctr -n "$CTR_NAMESPACE" images import -
+  fi
+  if ! ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "$IMAGE"; then
+    ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "docker.io/$IMAGE" || die "镜像未成功导入: $IMAGE"
+  fi
 
-info "推送镜像到 SWR: $SWR_REGISTRY"
-ctr -n "$CTR_NAMESPACE" images push --user "$SWR_USERNAME:$SWR_PASSWORD" "$IMAGE"
-info "镜像推送成功: $IMAGE"
+  info "推送镜像到 SWR: $SWR_REGISTRY"
+  ctr -n "$CTR_NAMESPACE" images push --user "$SWR_USERNAME:$SWR_PASSWORD" "$IMAGE"
+  info "镜像推送成功: $IMAGE"
+fi
+if [[ "$BUILD_ENGINE" == buildctl || "$BUILD_ENGINE" == docker-buildx ]]; then
+  rm -f -- "$archive" || die "已推送镜像，但无法删除临时归档: $archive"
+  info "已删除推送成功的临时 OCI 归档: $archive"
+fi

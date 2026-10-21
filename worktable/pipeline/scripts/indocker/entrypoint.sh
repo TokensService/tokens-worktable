@@ -14,6 +14,8 @@ DOCKERFILE_PATH="${DOCKERFILE_PATH:-$SOURCE_DIR/docker/Dockerfile}"
 BUILD_CONTEXT_PATH="${BUILD_CONTEXT_PATH:-$SOURCE_DIR}"
 DOCKERD_TIMEOUT_SECONDS="${DOCKERD_TIMEOUT_SECONDS:-120}"
 BUILD_CPUS="${BUILD_CPUS:-}"
+SWR_REGISTRY="${SWR_REGISTRY:?SWR_REGISTRY is required}"
+SWR_CREDENTIALS_FILE="${SWR_CREDENTIALS_FILE:-/output/.swr-credentials}"
 
 mkdir -p /var/lib/docker /var/run
 echo '[indocker] starting inner dockerd'
@@ -42,8 +44,21 @@ if [[ "$BUILD_CPUS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 docker build --network="${BUILD_NETWORK:-host}" "${cpu_args[@]}" --provenance=false --sbom=false --file "$DOCKERFILE_PATH" --tag "$IMAGE_REF" "${build_args[@]}" "$BUILD_CONTEXT_PATH"
 docker image inspect "$IMAGE_REF" >/dev/null || die "built image is missing"
-OUTPUT_ARCHIVE="${OUTPUT_ARCHIVE:-$OUTPUT_DIR/vllm-image.tar}"
-docker save --output "$OUTPUT_ARCHIVE" "$IMAGE_REF"
-[[ -s "$OUTPUT_ARCHIVE" ]] || die "docker save produced an empty archive"
-printf '%s\n' "$IMAGE_REF" > "$OUTPUT_DIR/image-ref"
-echo '[indocker] image archive ready'
+
+[[ -r "$SWR_CREDENTIALS_FILE" ]] || die "SWR credentials file is missing"
+mapfile -t swr_credentials < "$SWR_CREDENTIALS_FILE"
+((${#swr_credentials[@]} == 2)) || die "SWR credentials file must contain username and password"
+SWR_USERNAME="${swr_credentials[0]}"
+SWR_PASSWORD="${swr_credentials[1]}"
+[[ -n "$SWR_USERNAME" && -n "$SWR_PASSWORD" ]] || die "SWR username/password must not be empty"
+unset swr_credentials
+
+rm -f "$OUTPUT_DIR/push-success"
+echo "[indocker] logging in to ${SWR_REGISTRY}"
+printf '%s' "$SWR_PASSWORD" | docker login "$SWR_REGISTRY" --username "$SWR_USERNAME" --password-stdin
+unset SWR_PASSWORD
+echo "[indocker] pushing ${IMAGE_REF}"
+docker push "$IMAGE_REF"
+docker logout "$SWR_REGISTRY" >/dev/null 2>&1 || true
+printf '%s\n' "$IMAGE_REF" > "$OUTPUT_DIR/push-success"
+echo "[indocker] image pushed: ${IMAGE_REF}"
