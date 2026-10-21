@@ -17,10 +17,10 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
-  BUILD_REMOTE_HOST   远程编译主机，默认 192.168.1.101；设置空值可本机编译
-  BUILD_REMOTE_PORT   远程 SSH 端口，默认 22
+  BUILD_REMOTE_HOST   远程编译主机，默认 115.120.93.136；设置空值可本机编译
+  BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
-  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认 none（直连）；可按网络环境覆盖
+  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认经 192.168.10.6:3128 HTTP 代理转发
   BUILD_REMOTE_PASSWORD 远程 SSH 密码；建议由流水线秘密变量注入，留空时使用 SSH 密钥
   BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
@@ -80,10 +80,10 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
 # 流水线默认经 SSH 将构建转发到 101；设置 BUILD_REMOTE_HOST='' 可在当前机编译。
-BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-192.168.1.101}"
-BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-22}"
+BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-115.120.93.136}"
+BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
-BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-none}"
+BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
 BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-}"
 BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
@@ -254,7 +254,7 @@ ASKPASS
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法在远程 /mnt/data 准备控制目录"; }
 
   local remote_probe remote_cpu remote_mem_mb
-  remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc" 2>/dev/null)" \
+  remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc")" \
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法通过 SSH 登录远程编译机: $remote_target"; }
   remote_mem_mb="$(awk 'NR==1 {print int($2 / 1024)}' <<<"$remote_probe")"
   remote_cpu="$(awk 'NR==2 {print $1}' <<<"$remote_probe")"
