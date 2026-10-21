@@ -24,7 +24,17 @@ expected_node_ports='{
   "192.168.47.44": 31043,
   "192.168.47.214": 31044,
   "192.168.47.92": 31035,
-  "192.168.47.148": 31036
+  "192.168.47.148": 31036,
+  "192.168.47.4": 32004,
+  "192.168.47.109": 32109,
+  "192.168.47.112": 32112,
+  "192.168.47.201": 32201,
+  "192.168.47.85": 32085,
+  "192.168.47.141": 32141,
+  "192.168.47.90": 32090,
+  "192.168.47.15": 32015,
+  "192.168.47.32": 32032,
+  "192.168.47.246": 32246
 }'
 
 pull_prefix="$(sed -n '1,/^TARGET_USER=/p' "$script_dir/pull_render_config.sh" | sed '/^SCRIPT_DIR=/d')"
@@ -51,7 +61,7 @@ assert actual["115.33.98.101:2224"] == "203.0.113.140", actual
 assert actual["115.33.98.101:2225"] == "192.168.31.120", actual
 PY
 
-for script in render-config.sh deploy-model.sh; do
+for script in pull_render_config.sh render-config.sh deploy-model.sh; do
   assignment="$(grep -m1 'NODE_PORT_MAP=' "$script_dir/$script")"
   actual_node_ports="$(env -u NODE_PORT_MAP bash -c "$assignment
 printf '%s' \"\$NODE_PORT_MAP\"")"
@@ -83,6 +93,16 @@ done <<'EOF'
 192.168.47.214 31044
 192.168.47.92 31035
 192.168.47.148 31036
+192.168.47.4 32004
+192.168.47.109 32109
+192.168.47.112 32112
+192.168.47.201 32201
+192.168.47.85 32085
+192.168.47.141 32141
+192.168.47.90 32090
+192.168.47.15 32015
+192.168.47.32 32032
+192.168.47.246 32246
 EOF
 
 echo 'mapped environment default tests passed'
