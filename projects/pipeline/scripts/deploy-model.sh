@@ -127,8 +127,9 @@ EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
 ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
 PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill-64k}"
 PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode-64k}"
+PROFILING_MAX_ITERATIONS="${PROFILING_MAX_ITERATIONS:-3}"
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
-  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036}'
+  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036,"192.168.47.4":32004,"192.168.47.109":32109,"192.168.47.112":32112,"192.168.47.201":32201,"192.168.47.85":32085,"192.168.47.141":32141,"192.168.47.90":32090,"192.168.47.15":32015,"192.168.47.32":32032,"192.168.47.246":32246}'
 fi
 
 resolve_container_model_path() {
@@ -153,7 +154,9 @@ resolve_container_model_path() {
 resolve_container_model_path
 
 remote_quote() {
-  printf '%q' "$1"
+  local value="$1"
+  value="${value//\'/\'\"\'\"\'}"
+  printf "'%s'" "$value"
 }
 
 run_remote() {
@@ -373,6 +376,7 @@ PY
     printf 'export ENABLE_PROFILING=%q\n' "$ENABLE_PROFILING"
     printf 'export PROFILING_PREFILL_DIR=%q\n' "$PROFILING_PREFILL_DIR"
     printf 'export PROFILING_DECODE_DIR=%q\n' "$PROFILING_DECODE_DIR"
+    printf 'export PROFILING_MAX_ITERATIONS=%q\n' "$PROFILING_MAX_ITERATIONS"
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
@@ -1080,6 +1084,47 @@ cleanup_legacy_cluster_rbac() {
   done
 }
 
+cleanup_stale_release_services() {
+  local services_file service service_namespace service_name
+  services_file="$(mktemp)"
+  "$KUBECTL_BIN" get svc -A -o json >"$services_file"
+  mapfile -t stale_services < <(python3 - "$services_file" "$RELEASE_NAME" "$NAMESPACE" <<'PY'
+import json
+import sys
+
+path, release, namespace = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+for item in data.get("items", []):
+    metadata = item.get("metadata", {})
+    labels = metadata.get("labels", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    item_namespace = metadata.get("namespace", "")
+    helm_owned = (
+        annotations.get("meta.helm.sh/release-name") == release
+        and annotations.get("meta.helm.sh/release-namespace") == namespace
+    )
+    instance_owned = (
+        item_namespace == namespace
+        and labels.get("app.kubernetes.io/instance") == release
+        and labels.get("app.kubernetes.io/managed-by") == "Helm"
+    )
+    if helm_owned or instance_owned:
+        name = metadata.get("name")
+        if name:
+            print(f"{item_namespace}\t{name}")
+PY
+  )
+  rm -f "$services_file"
+  for service in "${stale_services[@]}"; do
+    [[ -n "$service" ]] || continue
+    service_namespace="${service%%$'\t'*}"
+    service_name="${service#*$'\t'}"
+    echo "[deploy] remove stale release Service: ${service_namespace}/${service_name}"
+    "$KUBECTL_BIN" -n "$service_namespace" delete service "$service_name" \
+      --ignore-not-found --wait=true
+  done
+}
+
 ensure_raycluster_cleanup_service_account() {
   local raycluster="$RELEASE_NAME-kuberay" service_account
 
@@ -1258,6 +1303,7 @@ cleanup_legacy_cluster_rbac
 wait_for_release_cleanup
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+cleanup_stale_release_services
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
 # Remove taints immediately before the new RayCluster is installed.  This
