@@ -207,6 +207,8 @@ print(json.dumps(entries))')" || id_map='[]'
 
 # ==================== 远程阶段（首个有 kubectl+helm 的目标节点） ====================
 
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"   # MULTI 拆分时递归调用自身要用
+
 node_ssh_password() { # <user> <port> <ip> <pass> <ssh 选项...> <远程命令...>
     local user=$1 port=$2 ip=$3 pass=$4
     shift 4
@@ -299,6 +301,89 @@ PY
 
 meminfo_of() { # <ip> → "total free surp"（大页三值；末尾带换行供 read 判成功，空输出=读取失败由调用方判）
     node_ssh "$1" "awk '/^HugePages_(Total|Free|Surp):/{printf \"%s \", \$2} END{print \"\"}' /proc/meminfo"
+}
+
+node_internal_ip() { # <node_name> → InternalIP（取不到则空）
+    kubectl get node "$1" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null | tr -d '\r'
+}
+
+# 目标节点兜底清扫：把「不属于任何实例、但仍占着大页」的目标节点也归零并刷新 allocatable。
+# 典型场景：该节点 label 已被摘（例如上次缩容失败），池子却还留着 2000Gi。
+sweep_target_pools() { # <node_name>
+    local node_name=$1 node_ip hp_total got w alloc ready w2
+    node_ip="$(node_internal_ip "$node_name")"
+    if [[ -z "$node_ip" ]]; then
+        log_err "$node_name: 取不到 InternalIP，跳过兜底清扫"
+        return 1
+    fi
+    # 无 ems label、无本实例 pod 才算「无人认领」
+    read -r hp_total _ _ < <(meminfo_of "$node_ip") || { log_err "$node_name: 读取大页失败"; return 1; }
+    hp_total=${hp_total:-0}
+    if (( hp_total > 0 )); then
+        log "$node_name: 仍占大页 ${hp_total} 页且无实例归属 → 归零"
+        node_ssh "$node_ip" "rm -f /tmp/ems_hp_release_done; nohup bash -c 'for n in /sys/devices/system/node/node*/hugepages/hugepages-2048kB/nr_hugepages; do echo 0 > \$n 2>/dev/null || true; done; echo done > /tmp/ems_hp_release_done' >/tmp/ems_hp_release.log 2>&1 &" \
+            || { log_err "$node_name: 启动大页释放失败"; return 1; }
+        w=0; got=-1
+        while (( w < HP_RELEASE_TIMEOUT_SECONDS )); do
+            sleep "$HP_RELEASE_POLL_SECONDS"
+            w=$((w + HP_RELEASE_POLL_SECONDS))
+            read -r got _ _ < <(meminfo_of "$node_ip")
+            got=${got:-0}
+            (( got == 0 )) && break
+            log "$node_name: 大页释放中（剩余 $got 页，${w}s）"
+        done
+        (( got == 0 )) || { log_err "$node_name: 大页未归零（剩 $got 页，surplus 卡住时需重启节点）"; return 1; }
+        log "$node_name: 大页已归零"
+    else
+        log "$node_name: 大页已为 0"
+    fi
+    # 清掉「实例已不存在、label 还挂着」的 ems label（release 已卸 / ns 已删但 label 残留，
+    # 典型场景：上次卸载在 [4/4] 之前中断）
+    local lk
+    for lk in $(kubectl get node "$node_name" -o json 2>/dev/null | python3 -c '
+import json, re, sys
+labels = (json.load(sys.stdin).get("metadata") or {}).get("labels") or {}
+print("\n".join(k for k in labels if re.fullmatch(r"ems[0-9]+", k)))
+'); do
+        [[ -n "$lk" ]] || continue
+        local alive
+        alive="$(helm list -A -o json 2>/dev/null | python3 -c '
+import json, sys
+key = sys.argv[1]
+try:
+    rels = json.load(sys.stdin) or []
+except ValueError:
+    rels = []
+print("yes" if any((r.get("name") or "").startswith(key + "-") for r in rels) else "no")
+' "$lk" 2>/dev/null || echo no)"
+        if [[ "$alive" == yes ]]; then
+            log "$node_name: label $lk 仍有对应 release，保留"
+            continue
+        fi
+        if kubectl label node "$node_name" "$lk-" >/dev/null 2>&1; then
+            log "$node_name: 清理无人认领的 label $lk-（实例已不存在）"
+        else
+            log_err "$node_name: 摘除残留 label $lk 失败"
+        fi
+    done
+
+    alloc="$(allocatable_gib_of "$(kubectl get node "$node_name" -o json 2>/dev/null)")"
+    if (( ${alloc:-0} > 0 )); then
+        log "$node_name: allocatable 仍报 ${alloc}Gi → 重启 kubelet 刷新"
+        node_ssh "$node_ip" 'systemctl restart kubelet' || { log_err "$node_name: 重启 kubelet 失败"; return 1; }
+        w2=0; ready=''
+        while (( w2 < KUBELET_TIMEOUT_SECONDS )); do
+            sleep "$KUBELET_POLL_SECONDS"
+            w2=$((w2 + KUBELET_POLL_SECONDS))
+            ready="$(kubectl get node "$node_name" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}' 2>/dev/null)"
+            [[ "$ready" == True ]] && break
+        done
+        [[ "$ready" == True ]] || { log_err "$node_name: 重启 kubelet 后未恢复 Ready"; return 1; }
+        log "$node_name: allocatable 已刷新"
+    else
+        log "$node_name: allocatable 已为 0"
+    fi
+    return 0
 }
 
 allocatable_gib_of() { # <single-node-json> → 大页 allocatable 换算 Gi（键缺失=0）
@@ -475,11 +560,77 @@ PY
 )" || { rm -f "$nodes_tmp" "$pods_tmp" "$helm_tmp"; die '实例推导失败'; }
     rm -f "$nodes_tmp" "$pods_tmp" "$helm_tmp"
     IFS=$'\t' read -r label_key EMS_NAME ems_stale_labels <<<"$inferred"
-    if [[ "$label_key" == MULTI ]]; then
-        die "目标节点交叉多个 EMS 存活实例（$EMS_NAME）：请按实例分批选择目标节点，或人工处理"
+    # ---- 递归拆分入口（必须先于 MULTI 判断，否则子进程会再次拆分 → 无限递归）----
+    local split_depth="${ems_split_depth:-0}"
+    if [[ -n "${ems_force_instance:-}" ]]; then
+        EMS_NAME="$ems_force_instance"
+        label_key="${EMS_NAME%%-*}"
+        log "指定实例：$EMS_NAME（label $label_key，由目标节点多实例拆分调用，深度 ${split_depth}）"
+    elif [[ "$label_key" == MULTI ]]; then
+        # 目标节点上有多个存活实例（例：192.168.31.113 同时承载 ems10-10 与 ems13-13）。
+        # 按「调用者对目标节点有完全使用权」：目标节点上触及的实例**全部**剥离干净。
+        # 每个实例各自按 label 覆盖度决定整卸 / 缩容，范围都只含目标节点。
+        (( split_depth < 4 )) || die "多实例拆分递归过深（depth=$split_depth），疑似死循环，已中止"
+        local -a multi_inst=()
+        mapfile -t multi_inst < <(kubectl get pods -A -o json 2>/dev/null | python3 -c '
+import json, re, sys
+targets = set(sys.argv[1].split(","))
+pat = re.compile(r"^ems[0-9]+-[0-9]+$")     # 工作负载 ns 即实例名（ems13-13）；资源 ns（ems13）不算
+names = set()
+for pod in json.load(sys.stdin).get("items", []):
+    meta = pod.get("metadata") or {}
+    ns = meta.get("namespace") or ""
+    node = (pod.get("spec") or {}).get("nodeName") or ""
+    if node in targets and pat.match(ns):
+        names.add(ns)
+print("\n".join(sorted(names)))
+' "$(IFS=,; echo "${target_nodes[*]}")")
+        if ((${#multi_inst[@]} == 0)); then
+            die "目标节点上存在多个 EMS label 但无法枚举出实例名（$EMS_NAME）：请人工确认后重跑"
+        fi
+        log "目标节点上有 ${#multi_inst[@]} 个存活实例（${multi_inst[*]}）→ 逐个剥离（范围仅限目标节点）"
+        local multi_fail='' inst
+        for inst in "${multi_inst[@]}"; do
+            [[ -n "$inst" ]] || continue
+            log "──── 剥离实例 $inst ────"
+            if ems_force_instance="$inst" ems_split_depth=$((split_depth + 1)) ems_skip_pool=1 bash "$self"; then
+                log "实例 $inst 处理完成"
+            else
+                multi_fail+="$inst "
+                log_err "实例 $inst 处理失败（继续处理后续实例）"
+            fi
+        done
+        if [[ -n "$multi_fail" ]]; then
+            die "以下实例未能剥离干净：${multi_fail}（详见各自日志）"
+        fi
+        log "目标节点上触及的实例已全部剥离：${multi_inst[*]}"
+        # 兜底：目标节点里可能还有「label 已摘、但池子没归零」的（上次缩容失败的典型残留）
+        local sw_bad='' sw_node
+        for sw_node in "${target_nodes[@]}"; do
+            sweep_target_pools "$sw_node" || sw_bad+="$sw_node "
+        done
+        if [[ -n "$sw_bad" ]]; then
+            die "以下目标节点仍有大页未归零 / allocatable 未刷新：${sw_bad}（见上方日志）"
+        fi
+        log "目标节点兜底清扫完成：${target_nodes[*]} 均已无大页占用"
+        printf '\n--- EMS 卸载契约（KEY=VALUE） ---\n'
+        printf 'EMS_NAME=%s\n' "$(IFS=,; echo "${multi_inst[*]}")"
+        printf 'EMS_MULTI_INSTANCES=%s\n' "$(IFS=,; echo "${multi_inst[*]}")"
+        printf 'EMS_STATUS=uninstalled\n'
+        printf 'EMS_NODES=%s\n' "$(IFS=,; echo "${target_nodes[*]}")"
+        return 0
     fi
+
     if [[ -z "$label_key" ]]; then
-        log "目标节点不属于任何 EMS 实例（已卸干净或从未安装）：无操作，幂等退出"
+        # 目标节点不属于任何实例：仍可能有「label 已摘、池子还留着」的孤儿大页
+        #（上次卸载中断的典型残留）→ 一并清扫，保证目标节点真正干净。
+        log "目标节点不属于任何 EMS 实例（已卸干净或从未安装）"
+        local noinst_bad='' noinst_node
+        for noinst_node in "${target_nodes[@]}"; do
+            sweep_target_pools "$noinst_node" || noinst_bad+="$noinst_node "
+        done
+        [[ -z "$noinst_bad" ]] || die "以下目标节点仍有大页未归零 / allocatable 未刷新：${noinst_bad}"
+        log "目标节点已干净（无实例、无孤儿大页）：${target_nodes[*]}"
         printf '\n--- EMS 卸载契约（KEY=VALUE） ---\n'
         printf 'EMS_NAME=\n'
         printf 'EMS_STATUS=uninstalled\n'
@@ -498,6 +649,7 @@ PY
     # 卸载/缩容范围：label 全部节点 vs 目标覆盖度——目标未覆盖全部 label 节点
     # → 缩容（只动目标节点，实例在剩余节点继续服务）；全覆盖 → 整卸（全部节点）
     local scale_mode=0
+    local -a remain_nodes=()
     local -a label_pairs=()
     mapfile -t label_pairs < <(printf '%s' "$node_json" | python3 -c '
 import json, sys
@@ -527,7 +679,6 @@ for node in json.load(sys.stdin).get("items", []):
                 node_ips+=("${node_ip:-}")
             fi
         done
-        local -a remain_nodes=()
         for node_name in "${label_all_names[@]}"; do
             [[ " ${target_nodes[*]} " != *" $node_name "* ]] && remain_nodes+=("$node_name")
         done
@@ -589,9 +740,32 @@ for pod in pods:
             else
                 log "$sc_name 上无钉住的实例 pod"
             fi
+            # 摘 label 与 DS 同步有竞态：DS 可能刚在 $sc_name 又拉了一个 server pod
+            # （2026-10-22 现场：ems-server-xxxx 被重建回目标节点，收尾永远等不到恢复）。
+            # 这里做「确认 label 已摘 → 反复清掉该节点上的一切本实例 pod」的幂等收口。
+            local sc_wait=0 sc_left=''
+            while (( sc_wait < 60 )); do
+                local lbl_now
+                lbl_now="$(kubectl get node "$sc_name" -o json 2>/dev/null | python3 -c '
+import json, sys
+labels = (json.load(sys.stdin).get("metadata") or {}).get("labels") or {}
+print(labels.get(sys.argv[1], ""))
+' "$label_key" 2>/dev/null || true)"
+                sc_left="$(kubectl get pods -n "$EMS_NAME" --field-selector "spec.nodeName=$sc_name" -o name 2>/dev/null | tr "\n" " " || true)"
+                [[ -z "$lbl_now" && -z "$sc_left" ]] && break
+                [[ -n "$lbl_now" ]] && kubectl label node "$sc_name" "$label_key-" >/dev/null 2>&1 || true
+                if [[ -n "$sc_left" ]]; then
+                    log "清理 $sc_name 上残留的本实例 pod（DS 竞态重建）：$sc_left"
+                    kubectl delete pods -n "$EMS_NAME" --field-selector "spec.nodeName=$sc_name" --grace-period=0 --force >/dev/null 2>&1 || true
+                fi
+                sleep 5
+                sc_wait=$(( sc_wait + 5 ))
+            done
+            [[ -z "$sc_left" ]] || die "$sc_name 上仍有本实例 pod 无法清除（${sc_left}）：目标节点未剥离干净，人工处理后重跑"
+            log "$sc_name：label 已摘净、该节点上已无本实例 pod（不会再被实例调度回来）"
         done
         # 等实例在剩余节点恢复：ns 内 pod 全部 Running&Ready 且不在目标节点
-        local sc_waited=0 sc_ok=0 sc_bad=''
+        local sc_waited=0 sc_ok=0 sc_bad='' sc_recover_failed=0
         local -a sc_target_pods=()
         log "等待实例在剩余节点恢复（ns $EMS_NAME 全部 pod Ready，最长 ${HP_FREE_TIMEOUT_SECONDS}s；zk 迁移瞬间多数派可能有秒级抖动，server 自动重连）"
         while (( sc_waited < HP_FREE_TIMEOUT_SECONDS )); do
@@ -611,12 +785,22 @@ for pod in pods:
     meta = pod.get("metadata") or {}
     spec = pod.get("spec") or {}
     status = pod.get("status") or {}
+    name = meta.get("name", "?")
     ready = any(c.get("type") == "Ready" and c.get("status") == "True"
                 for c in status.get("conditions") or [])
     if spec.get("nodeName") in targets:
-        bad.append(meta.get("name", "?") + "@" + str(spec.get("nodeName")))
-    elif not ready:
-        bad.append(meta.get("name", "?") + "未Ready")
+        bad.append(f"{name}仍在目标节点({spec.get(\"nodeName\")})")
+        continue
+    if ready:
+        continue
+    # 带上原因，便于一眼定位（Pending/Insufficient/VolumeNodeAffinity/ContainerCreating…）
+    reason = status.get("reason") or ""
+    for cstat in (status.get("containerStatuses") or []) + (status.get("initContainerStatuses") or []):
+        waiting = ((cstat.get("state") or {}).get("waiting") or {})
+        if waiting.get("reason"):
+            reason = waiting["reason"] + ": " + (waiting.get("message") or "")
+            break
+    bad.append(f"{name}未Ready[{status.get(\"phase\") or \"?\"}{("/" + reason) if reason else ""}]")
 print(" ".join(bad))
 ' "$(IFS=,; echo "${node_names[*]}")")"
             if [[ -z "$sc_bad" ]]; then
@@ -625,8 +809,15 @@ print(" ".join(bad))
             fi
             log "实例恢复中（${sc_waited}s）：$sc_bad"
         done
-        (( sc_ok )) || die "缩容后实例未恢复（$sc_bad）：pod 未迁离目标节点或未 Ready，人工确认实例状态后重跑"
-        log "实例已在剩余节点恢复 Ready"
+        if (( sc_ok )); then
+            log "实例已在剩余节点恢复 Ready（剩余节点［${remain_nodes[*]}］继续服务 $EMS_NAME）"
+        else
+            # A 的剥离是首要契约（必须做完），X 在剩余节点的恢复单独报错：
+            # 目标是「目标节点干净」+「实例在剩余节点继续服务」，两个都要，缺一个就明确失败。
+            sc_recover_failed=1
+            log_err "$EMS_NAME 在剩余节点［${remain_nodes[*]}］未在 ${HP_FREE_TIMEOUT_SECONDS}s 内恢复：$sc_bad"
+            log_err "诊断：先 kubectl -n $EMS_NAME describe pod <未就绪pod> 看 Events；常见原因是 zk 副本迁移后多数派未重建 / 镜像拉取失败 / 剩余节点资源（大页、CPU）不足。本 step 会先完成目标节点的剥离与清理，最后以失败结束。"
+        fi
     else
         log "=== [1/4] 卸载 helm release + 资源 ns ==="
         if [[ -n "$rel_ns" ]]; then
@@ -659,6 +850,11 @@ print(" ".join(bad))
     fi
 
     # ---- [2/4] + [3/4] 大页处理 ----
+    # MULTI 拆分时由父进程在全部实例卸完后**统一**释放池子（ems_skip_pool=1）：
+    # 否则先卸的实例会卡在「等本节点大页全 free」，而占着大页的正是还没卸的另一个实例。
+    if [[ -n "${ems_skip_pool:-}" ]]; then
+        log "=== [2/4][3/4] 跳过（由父进程统一释放大页；本轮仅卸 release/ns/label） ==="
+    else
     local released_ips='' restarted_ips='' hp_total=0 hp_free=0 hp_surp=0
     # ---- [2/4] 等待大页全 free（pod 退出 + Free==Total）----
     log "=== [2/4] 等待节点大页全 free（无 hugepages 请求 pod + HugePages_Free==Total，最长 ${HP_FREE_TIMEOUT_SECONDS}s） ==="
@@ -761,6 +957,8 @@ print(("True" if ready else "False"), int(value // 2**30))
             log "$node_name: Ready 且 allocatable 已归零"
         done
 
+    fi   # ← ems_skip_pool 分支结束
+
     # ---- [4/4] 清 label（缩容时 [1/4] 已摘目标节点）+ 终验 ----
     log "=== [4/4] 清理 label + 终验 ==="
     local label_removed='' idx4
@@ -821,7 +1019,7 @@ for rel in releases:
         raise SystemExit(0)
 raise SystemExit(1)
 ' "$EMS_NAME" || die "终验失败：缩容模式下 release $EMS_NAME 应保留却不存在"
-            log "终验通过（缩容：release $EMS_NAME 保留，实例在剩余节点服务）"
+            log "终验通过（缩容：目标节点已剥离干净；release $EMS_NAME 保留，实例由剩余节点［${remain_nodes[*]}］继续服务）"
         fi
     else
         helm list -A -o json 2>/dev/null | python3 -c '
@@ -841,7 +1039,7 @@ for rel in releases:
                 read -r hp_total hp_free hp_surp < <(meminfo_of "${node_ips[$idx5]}") \
                     || die "终验读取 ${node_names[$idx5]} 大页失败"
                 hp_total=${hp_total:-0}; hp_surp=${hp_surp:-0}
-                (( hp_total == 0 )) || die "终验失败：${node_names[$idx5]} 大页仍为 $hp_total 页"
+                [[ -n "${ems_skip_pool:-}" ]] || (( hp_total == 0 )) || die "终验失败：${node_names[$idx5]} 大页仍为 $hp_total 页（父进程会统一释放：ems_skip_pool 模式下跳过）"
                 (( hp_surp == 0 )) || die "终验失败：${node_names[$idx5]} 大页 surplus 为 $hp_surp 页未回收（需重启节点）"
             done
             kubectl get nodes -o json | python3 -c '
@@ -853,6 +1051,19 @@ for node in json.load(sys.stdin).get("items", []):
         fi
         log '终验通过'
     fi
+
+    # 缩容模式：目标节点已剥离干净，但实例未在剩余节点恢复 → 明确失败（不输出成功契约）
+    if (( scale_mode )) && (( ${sc_recover_failed:-0} )); then
+        die "目标节点已剥离干净（label / 实例 pod / 大页均已清理），但实例 $EMS_NAME 未在剩余节点［${remain_nodes[*]}］恢复：${sc_bad:-未知}——请按上面的诊断处理实例后重跑本 step 校验"
+    fi
+
+    # ---- 目标节点兜底清扫（含未被本实例覆盖的目标节点）----
+    local sweep_bad='' sw_node
+    for sw_node in "${target_nodes[@]}"; do
+        [[ " ${node_names[*]} " == *" $sw_node "* ]] && continue
+        sweep_target_pools "$sw_node" || sweep_bad+="$sw_node "
+    done
+    [[ -z "$sweep_bad" ]] || die "以下目标节点仍有大页未归零 / allocatable 未刷新：${sweep_bad}"
 
     # ---- 契约输出 ----
     local ems_status=uninstalled
@@ -866,6 +1077,9 @@ for node in json.load(sys.stdin).get("items", []):
     printf 'EMS_HUGEPAGES_RELEASED=%s\n' "$(echo "$released_ips" | sed 's/,$//')"
     printf 'EMS_KUBELET_RESTARTED=%s\n' "$(echo "$restarted_ips" | sed 's/,$//')"
     printf 'EMS_LABEL_REMOVED=%s\n' "$(echo "$label_removed" | sed 's/,$//')"
+    local remain_csv=''
+    ((${#remain_nodes[@]})) && remain_csv="$(IFS=,; echo "${remain_nodes[*]}")"
+    printf 'EMS_REMAIN_NODES=%s\n' "$remain_csv"
     printf 'EMS_STALE_LABELS=%s\n' "${ems_stale_labels:-}"
 }
 
