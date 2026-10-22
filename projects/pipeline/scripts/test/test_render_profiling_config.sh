@@ -59,3 +59,28 @@ for role, path in [('prefill','/home/service/works/models_ssd/profile/prefill-64
     assert 'warmup_iterations' not in cfg, cfg
 print('profiling config passed')
 PY
+
+# PROFILING_MAX_ITERATIONS 可覆盖 step 上限（默认 3）：完整抓长 prefill 时需要调大，
+# 例如 256K 输入在 max_num_batched_tokens=16384 下会切成 17 个 chunk。
+ENABLE_PROFILING=true \
+PROFILING_MAX_ITERATIONS=32 \
+PROFILING_TIMESTAMP=20261013_120000 \
+RUN_DIR="$WORK/run32" \
+CHART_TEMPLATE_DIR="$WORK/chart" \
+VALUES_TEMPLATE="$WORK/values.yaml" \
+ARCH_FILE="$WORK/architecture.json" \
+ARCH_NAME=profiling-test \
+DEPLOY_IMAGE=registry.example.com/xds:test \
+TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root"}]' \
+MOCK_DB=false \
+ENABLE_LMCACHE_TRACING=false \
+bash "$ROOT/render-config.sh" >/dev/null
+python3 - "$WORK/run32/rendered/architecture.request.json" <<'PY'
+import json,sys
+arch=json.load(open(sys.argv[1], encoding='utf-8'))
+specs=arch['deploy_spec_packages'][0]['deploy_specs']
+for spec in specs:
+    cfg=spec['params']['profiler_config']
+    assert cfg['max_iterations'] == 32, (spec['role'], cfg)
+print('profiling max_iterations override passed')
+PY
