@@ -59,6 +59,8 @@ declare -n platform_target_ips='TARGET_IPS'
 HUGEPAGE_GIB=2000
 VERIFY_TIMEOUT_SECONDS=900
 VERIFY_POLL_SECONDS=10
+INIT_STUCK_SECONDS=120          # ems-server 的 init 容器卡住多久判「真卡」（vendor 无超时 HTTP 调用的已知坑）
+INIT_RECREATE_MAX=2             # 判卡后允许删 pod 重建的次数（DaemonSet 自动拉起）
 
 # cleanup_stale_ems_labels 的结果出口（小写全局；进契约 EMS_STALE_LABELS_REMOVED）
 stale_labels_removed=''
@@ -448,7 +450,8 @@ print("0 -")' "$EMS_NAME" "$chart_name")
 
     # ---- S3 验证 ----
     log "=== 验证（pod 全 Running&Ready + 每节点大页分配达标，最长 ${VERIFY_TIMEOUT_SECONDS}s） ==="
-    local vwaited=0 pod_summary='' hp_ok=0
+    local vwaited=0 pod_summary='' hp_ok=0 init_recreated=0 init_recreate_list=''
+    declare -A stuck_since=()
     while (( vwaited < VERIFY_TIMEOUT_SECONDS )); do
         sleep "$VERIFY_POLL_SECONDS"
         vwaited=$((vwaited + VERIFY_POLL_SECONDS))
@@ -471,6 +474,40 @@ print(f"{ready}/{len(pods)}")
         ready_count="${pod_summary%%/*}"
         total_count="${pod_summary##*/}"
         (( total_count >= 6 && ready_count == total_count )) && { hp_ok=1; break; }
+        # ---- init 卡住自愈（2026-10-22 实测两次）----
+        # vendor 的 ems-server init 容器 check-ems-init-pod-ready 用 requests 调 k8s API
+        # 且**没有 timeout**：一旦那条到 NodeLocal DNS 的 TCP 查询不被应答，它就永久阻塞
+        # （日志一行不写、CHECK_TIMEOUT 兜底失效），900s 干等只能等到超时。
+        # 处理：同一 pod 卡在非 Running 的 Init 阶段超过 INIT_STUCK_SECONDS → 删掉重建
+        #（DaemonSet 立刻拉起新 pod，新连接通常一次就过），最多 INIT_RECREATE_MAX 次。
+        local stuck_pod stuck_secs
+        while read -r stuck_pod; do
+            [[ -n "$stuck_pod" ]] || continue
+            if [[ -z "${stuck_since[$stuck_pod]:-}" ]]; then
+                stuck_since["$stuck_pod"]="$vwaited"
+                continue
+            fi
+            stuck_secs=$(( vwaited - ${stuck_since[$stuck_pod]} ))
+            (( stuck_secs >= INIT_STUCK_SECONDS )) || continue
+            if (( init_recreated >= INIT_RECREATE_MAX )); then
+                log "$stuck_pod 仍卡在 Init ${stuck_secs}s（重建次数已用尽 ${INIT_RECREATE_MAX}）"
+                continue
+            fi
+            init_recreated=$((init_recreated + 1))
+            log "$stuck_pod 卡在 Init ${stuck_secs}s（vendor init 容器 requests 无超时调 API，TCP DNS 卡住即永久阻塞）→ 删除 pod 重建（第 ${init_recreated}/${INIT_RECREATE_MAX} 次）"
+            kubectl -n "$EMS_NAME" delete pod "$stuck_pod" --grace-period=0 --force >/dev/null 2>&1 || true
+            init_recreate_list+="$stuck_pod "
+            unset "stuck_since[$stuck_pod]"
+        done < <(kubectl get pods -n "$EMS_NAME" -o json 2>/dev/null | python3 -c '
+import json, sys
+for pod in json.load(sys.stdin).get("items", []):
+    status = pod.get("status") or {}
+    if status.get("phase") == "Running":
+        continue
+    inits = status.get("initContainerStatuses") or []
+    if any("running" in (c.get("state") or {}) for c in inits):
+        print(pod["metadata"]["name"])
+')
     done
     ((hp_ok)) || die "pod 未在 ${VERIFY_TIMEOUT_SECONDS}s 内全部就绪（最后状态 $pod_summary；zk 抖动通常自愈，持续异常请看 describe）"
 
@@ -529,6 +566,7 @@ for rel in json.load(sys.stdin):
         break
 ' "$EMS_NAME" "$chart_name")"
     printf 'EMS_POD_HEALTH=%s\n' "$pod_summary"
+    printf 'EMS_INIT_POD_RECREATED=%s\n' "$(echo "${init_recreate_list// /,}" | sed 's/,$//')"
     printf 'EMS_IDEMPOTENT=%s\n' "$idempotent"
     printf 'EMS_STALE_LABELS_REMOVED=%s\n' "${stale_labels_removed:-}"
     printf 'EMS_STATUS=installed\n'
