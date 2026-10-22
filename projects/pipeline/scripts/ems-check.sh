@@ -13,20 +13,16 @@
 # 分发阶段会逐节点 SSH 采集内网身份（hostname/hostname -I）构建映射表随
 # 小写 env 下传，目标定位按「直接命中（内网 IP/节点名）→ endpoint 映射 →
 # 剥端口兜底」三级解析（gy1 内网标识行为不变）。
-# 本 step 全程只读；填写 EMS_NAME 即启用「安装前门禁」（编排上应置于 ems-deploy
-# 之前）：校验名字/label/ns·release/节点占用，任一不过即 exit 1 拦住下游；
-# 通过则输出 EMS_NAME/EMS_LABEL_KEY/EMS_NODES/EMS_IDEMPOTENT 供 deploy 继承。
-# 本 step 全程只读，输出精简版（团队设备口径）：
+# 本 step 全程只读、零参数（2026-10 起「安装前门禁」整体下线：门禁判定下移到
+# ems-deploy 的 [1/3] 前置检查——实例名冲突显式失败、空壳 label 自动摘除；清场
+# 由 ems-hugepages 的内存自愈按需处理）。输出精简版（团队设备口径）：
 #   ① 集群巡检：团队设备上的健康实例为主体（实例名·chart 版本·运行时长，
 #      团队节点与大页已分配，各两行；非团队节点仅计数）；异常实例一行标注；
 #      非团队设备上的实例与空壳/遗留仅一行汇总；
 #   ② 目标节点定位：逐个检查 TARGET_IP/TARGET_IPS 归属，命中实例则输出实例简报
 #      （版本/运行时长/节点数；非团队设备节点带标注）；
-#   ③ 安装前门禁（EMS_NAME 填写时）：名字格式/label 占用/ns·release 残留/
-#      资源余量（CPU/内存，调度器 requests 口径；大页由 ems-hugepages step 负责，
-#      不关心节点上跑着什么业务），不过即拦；
-#   ④ 契约输出：stdout KEY=VALUE（EMS_*），实例计数与首个命中目标的信息
-#      注入下游 step 环境；门禁模式下额外输出门禁契约。
+#   ③ 契约输出：stdout KEY=VALUE（EMS_*），实例计数与首个命中目标的信息
+#      注入下游 step 环境。
 # 实例识别约定（同 ems-deploy skill）：release 名 = 资源 ns = ems<N>-<M>，
 # label key = ems<N>（值 true）；EMS pod = 容器名含 ems 或挂载含 ems 的路径。
 # 依赖：执行机需要 ssh/scp（+python3 解析 TARGET_HOSTS，密码认证还需
@@ -38,17 +34,13 @@ set -uo pipefail
 
 SCRIPT_NAME='ems-check'
 
-# ---- step 参数声明（可选；均留空 = 纯巡检，参数面不变零必填）----
-# EMS_NAME = 安装前门禁：预安装实例名（ems<N>-<M>）。填写即启用门禁（校验名字/label/ns·release/
-#            节点占用，任一不过本 step 失败拦住下游 ems-deploy）；成功时输出 EMS_IDEMPOTENT 等
-#            契约供 deploy 继承。编排：ems-check(门禁) → ems-deploy
-EMS_NAME="${EMS_NAME:-}"
-# EMS_RELEASE_NAMESPACES = 释放预授权（逗号分隔 ns）：门禁不再判业务占用（改查资源余量），
-#            此参数仅原样透传下游（ems-deploy S1 据此删除）；纯巡检模式忽略
-EMS_RELEASE_NAMESPACES="${EMS_RELEASE_NAMESPACES:-}"
+# ---- step 参数声明：零参数（2026-10 起本 step 只做只读巡检）----
+# 原 EMS_NAME（安装前门禁）/ EMS_RELEASE_NAMESPACES（释放预授权透传）已下线：
+# 门禁判定下移到 ems-deploy 自身的 [1/3] 前置检查（实例名冲突显式失败、空壳 label
+# 自动摘除），清场由 ems-hugepages 的内存自愈按需处理。本 step 不再读任何 EMS_* 入参。
 
 # 平台注入变量经 nameref 间接引用，避免被「识别参数」扫出入参：
-# TARGET_HOSTS（目标节点凭据）；EMS_IDEMPOTENT 仅为门禁→deploy 的单向契约入口，不进参数面
+# TARGET_HOSTS（目标节点凭据）
 declare -n platform_target_hosts='TARGET_HOSTS'
 
 # 团队设备清单（tokens-devices skill 为准，设备增减时同步更新）：仅这些设备的
@@ -154,28 +146,15 @@ for line in sys.stdin.read().splitlines():
 print(json.dumps(entries))')" || id_map='[]'
     fi
 
-    # 门禁期望版本：执行机读仓内 ems-chart/Chart.yaml（远程侧无仓，经小写 env 转发；
-    # 缺失 = 门禁跳过 chart 版本比对，仅报告）
-    local expected_chart='' chart_yaml
-    if [[ -n "${EMS_NAME:-}" ]]; then
-        chart_yaml="$(dirname "$self")/ems-chart/Chart.yaml"
-        if [[ -f "$chart_yaml" ]]; then
-            expected_chart="$(sed -n 's/^version:[[:space:]]*//p' "$chart_yaml" | head -1 | tr -d '"')"
-        fi
-        [[ -n "$expected_chart" ]] || echo "[$SCRIPT_NAME] WARN: 未找到 $chart_yaml，门禁跳过 chart 版本比对"
-    fi
-
     echo "[$SCRIPT_NAME] remote execution via $probe_user@$probe_host:$probe_port（kubectl 视图为集群级，任一节点一致）"
     remote_scp "$probe_user" "$probe_host" "$probe_port" "$probe_pass" "$self" /tmp/ems-check.sh \
         || die "推送脚本到 $probe_host 失败"
 
     remote_env=(TARGET_HOSTS=)
-    for var in TARGET_IP TARGET_IPS EMS_NAME EMS_RELEASE_NAMESPACES; do
+    for var in TARGET_IP TARGET_IPS; do
         printf -v quoted '%q' "${!var:-}"
         remote_env+=("$var=$quoted")
     done
-    printf -v quoted '%q' "$expected_chart"
-    remote_env+=("ems_chart_expected=$quoted")
     printf -v quoted '%q' "$id_map"
     remote_env+=("ems_target_id_map=$quoted")
     remote_run "$probe_user" "$probe_host" "$probe_port" "$probe_pass" \
@@ -651,104 +630,6 @@ else:
     else:
         print(f'执行机（{", ".join(LOCAL_IDS) or "?"}）不是本集群节点；实例清单仍有效')
 
-# ---- ③ 安装前门禁（EMS_NAME 填写时；编排位置：ems-deploy 之前）--------------------
-GATE_NAME = os.environ.get('EMS_NAME', '').strip()
-GATE_RELEASE_PASSTHROUGH = os.environ.get('EMS_RELEASE_NAMESPACES', '').strip()
-GATE_EXPECTED = os.environ.get('ems_chart_expected', '').strip()
-gate_contract = []
-if GATE_NAME:
-    print()
-    print(f'=== 安装前门禁（预安装 {GATE_NAME}；任一不过即失败拦住下游 ems-deploy） ===')
-    if not re.fullmatch(r'ems\d+(-\d+)?', GATE_NAME):
-        fail(f'EMS_NAME 格式应为 ems<N>-<M>，如 ems13-13（当前：{GATE_NAME}）')
-    label_key = GATE_NAME.split('-')[0]
-    if targets is None:
-        fail('门禁需要目标节点：请配置环境/节点选择（TARGET_IPS/TARGET_HOSTS）')
-    gate_nodes = []
-    for target in targets:
-        node = resolve_target(target)
-        if not node:
-            fail(f'目标 {target} 不是本集群节点（跨 region endpoint 需经 TARGET_HOSTS 分发采集身份映射）')
-        gate_nodes.append(node['metadata']['name'])
-    # 节点数量不设限（check 是通用巡检 step，单节点巡检/门禁均合法）；
-    # 「EMS 安装至少 2 台」是 ems-deploy 的执行前提，由 deploy 自行校验
-    print(f'    [ok] 目标节点：{"、".join(gate_nodes)}（label {label_key}，共 {len(gate_nodes)} 台）')
-    occupied = [name for name in label_to_nodes.get(label_key, []) if name not in gate_nodes]
-    if occupied:
-        fail(f'label {label_key}=true 已被其他节点占用：{"、".join(occupied)}（换名或人工协调，勿动他人 label）')
-    print(f'    [ok] label {label_key}=true 无外部占用')
-    ns_exists = GATE_NAME in namespaces
-    gate_release = release_by_name.get(GATE_NAME)
-    idempotent = 0
-    if ns_exists and gate_release:
-        installed_version = chart_split(gate_release.get('chart') or '')[1]
-        if GATE_EXPECTED and installed_version and installed_version != GATE_EXPECTED:
-            fail(f'实例 {GATE_NAME} 已安装 chart {installed_version}，与仓内 {GATE_EXPECTED} 不一致；'
-                 '升级是独立操作，请人工处理')
-        instance = instances.get(GATE_NAME)
-        if instance and instance['healthy']:
-            idempotent = 1
-            print(f'    [ok] 已健康安装（chart {installed_version or "?"}），幂等重入：deploy 将跳过安装仅验证')
-        else:
-            detail = (f'（{instance["running_ready"]}/{len(instance["pods"])} Running&Ready）' if instance
-                      else '（无 pod）')
-            fail(f'实例 {GATE_NAME} 已存在且不健康{detail}；不自动重装，需人工处理')
-    elif ns_exists:
-        fail(f'资源 ns {GATE_NAME} 已存在但找不到对应 helm release（残留，需人工处理）')
-    elif gate_release:
-        fail(f'发现同名 helm release {GATE_NAME} 但资源 ns 不存在（残留，需人工处理）')
-    else:
-        print('    [ok] 名字可用（ns 与 release 均不存在）')
-    # G-5 资源余量（调度器 requests 口径；不关心节点上是否跑着其他业务，只看装不装得下）。
-    # 只查 CPU/内存：大页有独立的 ems-hugepages step 负责（配置/allocatable 刷新），
-    # 门禁不重复判。需求：每节点 ems-server 40C+40Gi（含 sidecar 计 41C/41Gi）；集群级
-    # controller 8C/8G + zk×3 1C/4G 落在其中一节点（需单节点再余 12C/20Gi）。
-    # EMS 自身 ns（GATE_NAME）的 pod 不计入占用——幂等重入时它们就是 EMS 的。
-    REQ_CPU, REQ_MEM = 41, 41 * 2 ** 30
-    EXTRA_CPU, EXTRA_MEM = 12, 20 * 2 ** 30
-
-    def pod_request(containers, field):
-        return sum(parse_qty(((c.get('resources') or {}).get('requests') or {}).get(field)) or 0
-                   for c in containers)
-
-    node_request = {name: {'cpu': 0.0, 'mem': 0.0} for name in gate_nodes}
-    for pod in pods:
-        node_name = node_of(pod)
-        if node_name not in node_request or pod_phase(pod) in ('Succeeded', 'Failed'):
-            continue
-        if pod.get('metadata', {}).get('namespace', '') == GATE_NAME:
-            continue
-        spec = pod.get('spec') or {}
-        regular, inits = spec.get('containers') or [], spec.get('initContainers') or []
-        for field, key in (('cpu', 'cpu'), ('memory', 'mem')):
-            value = max(pod_request(regular, field),
-                        max((parse_qty(((c.get('resources') or {}).get('requests') or {}).get(field)) or 0
-                             for c in inits), default=0))
-            node_request[node_name][key] += value
-    free = {}
-    for node_name in gate_nodes:
-        allocatable = (node_by_key[node_name].get('status') or {}).get('allocatable') or {}
-        cpu_free = (parse_qty(allocatable.get('cpu')) or 0) - node_request[node_name]['cpu']
-        mem_free = (parse_qty(allocatable.get('memory')) or 0) - node_request[node_name]['mem']
-        free[node_name] = (cpu_free, mem_free)
-        if cpu_free < REQ_CPU or mem_free + 1e-6 < REQ_MEM:
-            fail(f'{node_name} 资源余量不足：CPU {cpu_free:.0f}C（需 {REQ_CPU}C）· 内存 {fmt_gib(mem_free)}（需 {fmt_gib(REQ_MEM)}）；'
-                 '需先释放业务或等余量恢复（门禁只看 requests 余量，不区分业务归属；大页由 ems-hugepages step 负责）')
-        print(f'    [ok] {node_name} 资源余量：CPU {cpu_free:.0f}C ≥ {REQ_CPU}C · 内存 {fmt_gib(mem_free)} ≥ {fmt_gib(REQ_MEM)}（大页另由 ems-hugepages step 保障）')
-    if not any(cpu >= REQ_CPU + EXTRA_CPU and mem >= REQ_MEM + EXTRA_MEM
-               for cpu, mem in free.values()):
-        fail(f'无目标节点能容纳集群级组件（controller+zk 需单节点再余 {EXTRA_CPU}C/{fmt_gib(EXTRA_MEM)}）')
-    print('    门禁通过')
-    gate_contract = [
-        f'EMS_NAME={GATE_NAME}',
-        f'EMS_LABEL_KEY={label_key}',
-        f'EMS_NODES={",".join(targets)}',
-        f'EMS_IDEMPOTENT={idempotent}',
-        'EMS_GATE=passed',
-    ]
-    if GATE_RELEASE_PASSTHROUGH:
-        gate_contract.append(f'EMS_RELEASE_NAMESPACES={GATE_RELEASE_PASSTHROUGH}')
-
 # ---- ④ 契约输出（stdout KEY=VALUE，注入下游 step） -------------------------------
 healthy_count = sum(1 for instance in instances.values() if instance['healthy'])
 unhealthy = sorted(name for name, instance in instances.items() if not instance['healthy'])
@@ -769,7 +650,6 @@ if first_hit:
         f'EMS_TARGET_CHART_VERSION={first_hit["chart_version"] or "?"}',
         f'EMS_TARGET_POD_HEALTH={first_hit["running_ready"]}/{len(first_hit["pods"])}',
     ]
-contract += gate_contract
 print()
 print('--- EMS 巡检契约（KEY=VALUE） ---')
 for line in contract:

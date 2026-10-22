@@ -4,7 +4,7 @@
 #
 # 用法：在流水线中插入本 step，2 个参数均可选（留空即继承上游变量，
 # 通常来自前置 ems-check 门禁的契约输出；独立运行时需显式提供 EMS_NAME）。
-# 目标节点 = 平台注入的 TARGET_IPS/TARGET_HOSTS（EMS 集群节点，通常 2 台）。
+# 目标节点 = 平台注入的 TARGET_IPS/TARGET_HOSTS（EMS 集群节点，≥1 台，单机可装）。
 #
 # 编排：ems-check（EMS_NAME 门禁模式：校验名字/label 占用/ns·release 残留/
 # 资源余量（CPU/内存/大页）/版本一致，输出 EMS_IDEMPOTENT 判定）→ ems-hugepages（大页配置
@@ -20,12 +20,13 @@
 # endpoint 映射 → 剥端口」三级（label 打在解析出的集群节点名上）。gy1 内网
 # 标识行为不变。
 #
-# 流程（fail-fast；门禁与大页已上移前置 step，本 step 只留最小防线）：
-#   P0 前置防线：同名 ns/release 已存在且无门禁幂等判定（EMS_IDEMPOTENT≠1）
-#      → 拒绝盲装；门禁判定幂等 → 跳过安装仅验证
-#   S1 释放节点：仅删除 EMS_RELEASE_NAMESPACES 显式列出的 ns，删后复查不复活
-#      （kuberay/CI 自动重装 → 失败并提示人工协调）
-#   S2 安装：打 label + helm install（版本 = 仓内 ems-chart/，单独维护）
+# 流程（fail-fast；2026-10 起前置 ems-check 门禁下线，判定全部内建在本 step）：
+#   P0 前置检查（实例名冲突判定）：同名 ns+release 都在 → 比 chart 版本 + pod 健康度，
+#      一致且健康 = 幂等重入（跳过安装仅验证），否则显式失败；只有 ns 或只有 release
+#      = 残留 → 显式失败（实例名冲突不自动处理）
+#   S1 释放节点：不再删除业务命名空间（原 EMS_RELEASE_NAMESPACES 预授权机制取消）。
+#      目标节点内存不足时由 ems-hugepages step 自愈驱逐该节点上的非 EMS pod
+#   S2 安装：摘空壳 label + 打 label + helm install（版本 = 仓内 ems-chart/，单独维护）
 #   S3 验证：全部 pod Running&Ready + 每节点大页已分配达标（大页未配够/allocatable
 #      未刷 → 失败并指向 ems-hugepages step）+ 契约输出
 #
@@ -43,27 +44,26 @@ SCRIPT_NAME='ems-deploy'
 
 # ---- step 参数声明（平台「识别参数」按声明与紧邻注释扫描）----
 # EMS_NAME = EMS 实例名（=资源 ns=release 名，如 ems13-13）；label key 与 release 存放 ns 取首段（ems13）。
+#            必填（2026-10 起不再由 ems-check 契约注入——ems-check 已改成零参数只读巡检）。
 #            留空 = 继承上游变量（编排：前置 ems-check 门禁输出）；独立运行时需显式指定，
 #            运行时为空会在前置检查报错并提示（不设必填校验，便于保存阶段留空继承）
 EMS_NAME="${EMS_NAME:-}"
 # HUGEPAGE_GIB 已收紧为内部常量（固定 2000Gi，与仓内 chart values 同值；1000Gi 规格已废弃，不再作为入参）
-# EMS_RELEASE_NAMESPACES = 预授权释放（删除）的命名空间，逗号分隔；留空 = 目标节点存在业务 pod 时直接失败
-EMS_RELEASE_NAMESPACES="${EMS_RELEASE_NAMESPACES:-}"
 
 # 平台注入变量经 nameref 间接引用，避免被「识别参数」扫出入参（零冗余参数设计）。
 declare -n platform_target_hosts='TARGET_HOSTS'
 declare -n platform_target_ips='TARGET_IPS'
-# EMS_IDEMPOTENT：前置 ems-check 门禁的单向契约（健康同名安装=1，deploy 据此幂等重入）；
-# nameref 间接引用不进「识别参数」
-declare -n platform_ems_idempotent='EMS_IDEMPOTENT'
 
 # 内部常量（普通赋值，不进参数面）；大页固定 2000Gi（配置在 ems-hugepages step，
 # 本 step 仅在验证阶段比对每节点已分配量）
 HUGEPAGE_GIB=2000
-RELEASE_TIMEOUT_SECONDS=180
-RESURRECT_CHECK_SECONDS=10
 VERIFY_TIMEOUT_SECONDS=900
 VERIFY_POLL_SECONDS=10
+INIT_STUCK_SECONDS=120          # ems-server 的 init 容器卡住多久判「真卡」（vendor 无超时 HTTP 调用的已知坑）
+INIT_RECREATE_MAX=2             # 判卡后允许删 pod 重建的次数（DaemonSet 自动拉起）
+
+# cleanup_stale_ems_labels 的结果出口（小写全局；进契约 EMS_STALE_LABELS_REMOVED）
+stale_labels_removed=''
 
 die() { echo "[$SCRIPT_NAME] ERROR: $*" >&2; exit 1; }
 log() { echo "[$SCRIPT_NAME] $*"; }
@@ -117,7 +117,7 @@ for host in hosts:
 PY
 )" || die '解析 TARGET_HOSTS 失败'
     mapfile -t specs <<<"$raw"
-    ((${#specs[@]} >= 2)) || die 'EMS 安装至少需要 2 个目标节点（TARGET_HOSTS）'
+    ((${#specs[@]} >= 1)) || die 'EMS 安装至少需要 1 个目标节点（TARGET_HOSTS，单机可装）'
 
 
     self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -185,7 +185,7 @@ print(json.dumps(entries))')" || id_map='[]'
 
     log "remote execution via $probe_user@$probe_host:$probe_port（kubectl 视图为集群级）"
     remote_env=(TARGET_HOSTS=)
-    for var in EMS_NAME EMS_RELEASE_NAMESPACES TARGET_IPS EMS_IDEMPOTENT; do
+    for var in EMS_NAME TARGET_IPS; do
         printf -v quoted '%q' "${!var:-}"
         remote_env+=("$var=$quoted")
     done
@@ -198,11 +198,93 @@ print(json.dumps(entries))')" || id_map='[]'
 
 # ==================== 远程阶段（首个有 kubectl+helm 的目标节点） ====================
 
+# 实例 pod 健康度（幂等重入判定用）：stdout "ready/total"。
+instance_pod_health() { # <namespace>
+    kubectl get pods -n "$1" -o json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    pods = json.load(sys.stdin).get("items", [])
+except ValueError:
+    print("0/0"); raise SystemExit
+ready = 0
+for pod in pods:
+    status = pod.get("status") or {}
+    ok = any(c.get("type") == "Ready" and c.get("status") == "True"
+             for c in status.get("conditions") or [])
+    ready += 1 if (status.get("phase") == "Running" and ok) else 0
+print(f"{ready}/{len(pods)}")'
+}
+
+# 空壳 label 清理：实例名派生的 ems<N>=true 若残留在**非目标节点**（该节点上没有
+# 「本实例名系」ns 的 pod，即只剩 label 的皮），会通过 nodeSelector 把新实例的 pod
+# 吸到旧节点上去（非目标机被吃掉大页/内存）。这里只摘这种空壳；有 pod 的一律不动
+# （那是活实例，属实例名冲突，由前置检查/门禁显式失败）。
+cleanup_stale_ems_labels() { # <label_key> <目标节点名...>
+    local key=$1
+    shift
+    local nodes_file pods_file stale node
+    nodes_file="$(mktemp)"
+    pods_file="$(mktemp)"
+    if ! kubectl get nodes -o json >"$nodes_file" 2>/dev/null \
+        || ! kubectl get pods -A -o json >"$pods_file" 2>/dev/null; then
+        rm -f "$nodes_file" "$pods_file"
+        return 0
+    fi
+    stale="$(python3 - "$nodes_file" "$pods_file" "$key" "$@" <<'PYQ'
+import json, re, sys
+
+nodes_file, pods_file, key = sys.argv[1], sys.argv[2], sys.argv[3]
+targets = set(sys.argv[4:])
+ns_pat = re.compile(r'^' + re.escape(key) + r'($|-[0-9]+$)')
+live_nodes = set()
+for pod in json.load(open(pods_file, encoding='utf-8')).get('items', []):
+    namespace = (pod.get('metadata') or {}).get('namespace') or ''
+    node_name = (pod.get('spec') or {}).get('nodeName') or ''
+    if node_name and ns_pat.match(namespace):
+        live_nodes.add(node_name)
+stale_nodes, blocked_nodes = [], []
+for node in json.load(open(nodes_file, encoding='utf-8')).get('items', []):
+    meta = node.get('metadata') or {}
+    name = meta.get('name')
+    if not name or name in targets:
+        continue
+    if key not in (meta.get('labels') or {}):
+        continue
+    (blocked_nodes if name in live_nodes else stale_nodes).append(name)
+print(','.join(stale_nodes) + '\t' + ','.join(blocked_nodes))
+PYQ
+)" || stale=''
+    rm -f "$nodes_file" "$pods_file"
+    stale="$(printf '%s' "$stale" | tr -d '\r')"
+    local blocked="${stale#*$'\t'}"
+    stale="${stale%%$'\t'*}"
+    # label 挂在非目标节点、且该节点上有「本实例名系」ns 的 pod = 另一活实例：
+    # 属实例名冲突，不自动处理（摘了会让对方实例的 pod 失去 nodeSelector 落点）。
+    if [[ -n "$blocked" ]]; then
+        die "label $key=true 还挂在非目标节点：${blocked}，且这些节点上有 ${key} / ${key}-<M> ns 的 pod（另一活实例）——实例名冲突不自动处理，请换实例名或先人工卸载对方实例后重跑"
+    fi
+    [[ -n "$stale" ]] || return 0
+    local old_ifs="$IFS"
+    IFS=','
+    for node in $stale; do
+        [[ -n "$node" ]] || continue
+        if kubectl label node "$node" "$key-" >/dev/null 2>&1; then
+            log "空壳 label 清理：$node $key-（该节点无本实例 pod、无 release，防 pod 漂到非目标节点）"
+            stale_labels_removed+="${stale_labels_removed:+,}$node"
+        else
+            log "警告：$node 空壳 label $key 清理失败（不阻塞主流程，人工 kubectl label node $node $key- 可补）"
+        fi
+    done
+    IFS="$old_ifs"
+    return 0
+}
+
+
 install_main() {
     local label_ns label_key chart_dir chart_version
     local -a target_ips=() target_nodes=()
 
-    [[ -n "$EMS_NAME" ]] || die "EMS_NAME 为空：请在 step 参数显式填写，或经前置 ems-check 门禁契约注入（上游变量 EMS_NAME）"
+    [[ -n "$EMS_NAME" ]] || die "EMS_NAME 为空：请在 step 参数里显式填写实例名（ems<N>-<M>，如 ems13-13）"
     [[ "$EMS_NAME" =~ ^ems[0-9]+(-[0-9]+)?$ ]] || die "EMS_NAME 格式应为 ems<N>-<M>，如 ems13-13（当前：$EMS_NAME）"
     label_key="${EMS_NAME%%-*}"
     label_ns="$label_key"
@@ -234,7 +316,7 @@ if raw:
             print(item.strip())
 PY
 )
-    ((${#target_ips[@]} >= 2)) || die 'EMS 安装至少需要 2 个目标节点（TARGET_IPS/TARGET_HOSTS）'
+    ((${#target_ips[@]} >= 1)) || die 'EMS 安装至少需要 1 个目标节点（TARGET_IPS/TARGET_HOSTS，单机可装）'
 
     # ---- 解析目标节点名 ----
     log "=== [0/3] 解析目标节点（chart $chart_version） ==="
@@ -297,66 +379,59 @@ print(node["metadata"]["name"] + "\t" + via)
         fi
     done
 
-    # ---- 前置检查（最小防线；完整门禁在前置 ems-check 的 EMS_NAME 模式）----
-    # 门禁已校验：名字格式/label 占用/ns·release 残留/版本一致/资源余量，并给出
-    # EMS_IDEMPOTENT 判定（健康同名安装 = 1，deploy 跳过安装仅验证）。此处仅拦截
-    # 未经门禁的重入（同名 ns/release 已存在却无幂等判定），防误装/盲装。
-    log "=== [1/3] 前置检查（门禁契约 EMS_IDEMPOTENT=${platform_ems_idempotent:-0}） ==="
-    local release_exists=0
-    helm list -A -o json 2>/dev/null | python3 -c '
+    # ---- 前置检查：实例名冲突判定（2026-10 起自包含，不再依赖 ems-check 门禁契约）----
+    # 三态：① ns + release 都在 → 比 chart 版本 + pod 健康度，一致且健康 = 幂等重入
+    #（跳过安装仅验证），否则失败；② 只有其一 → 残留，失败；③ 都没有 → 全新安装。
+    # 实例名冲突一律显式失败（不自动卸载/重装），符合「冲突不自动处理」的约定。
+    log "=== [1/3] 前置检查（实例名冲突判定） ==="
+    local release_exists=0 installed_chart='-' ns_exists=0 idempotent=0
+    local helm_json
+    helm_json="$(helm list -A -o json 2>/dev/null)"
+    read -r release_exists installed_chart < <(printf '%s' "${helm_json:-[]}" | python3 -c '
 import json, sys
-for rel in json.load(sys.stdin):
-    if rel.get("name") == sys.argv[1]:
-        raise SystemExit(0)
-raise SystemExit(1)' "$EMS_NAME" && release_exists=1
-    local ns_exists=0
+wanted, prefix = sys.argv[1], sys.argv[2] + "-"
+try:
+    releases = json.load(sys.stdin) or []
+except ValueError:
+    releases = []
+for release in releases:
+    if release.get("name") != wanted:
+        continue
+    chart = release.get("chart") or ""
+    print("1", chart[len(prefix):] if chart.startswith(prefix) else chart)
+    raise SystemExit
+print("0 -")' "$EMS_NAME" "$chart_name")
+    release_exists="${release_exists:-0}"
+    installed_chart="${installed_chart:--}"
     kubectl get ns "$EMS_NAME" -o json >/dev/null 2>&1 && ns_exists=1
-    local idempotent=0
-    if (( ns_exists || release_exists )); then
-        if [[ "${platform_ems_idempotent:-0}" != 1 ]]; then
-            die "已存在同名安装（ns=$ns_exists release=$release_exists）且未获门禁幂等判定：请在流水线前置 ems-check（EMS_NAME 门禁模式）重跑，或人工处理残留"
+    if (( ns_exists && release_exists )); then
+        [[ "$installed_chart" == "$chart_version" ]] \
+            || die "实例 $EMS_NAME 已安装 chart $installed_chart，与仓内 chart $chart_version 不一致——实例名冲突不自动处理（升级是独立操作），请人工确认后走卸载/升级流程"
+        local pod_health
+        pod_health="$(instance_pod_health "$EMS_NAME")"
+        if [[ "$pod_health" == */* ]] && (( ${pod_health##*/} > 0 )) && [[ "${pod_health%%/*}" == "${pod_health##*/}" ]]; then
+            idempotent=1
+            log "同名实例健康（pod ${pod_health} Running&Ready，chart $installed_chart）：幂等重入：跳过安装，仅验证"
+        else
+            die "实例 $EMS_NAME 已存在但不健康（pod ${pod_health:-?} Running&Ready）——实例名冲突不自动处理，请人工处理后重跑"
         fi
-        idempotent=1
-        log "门禁已判定幂等重入：跳过安装，仅验证"
+    elif (( ns_exists )); then
+        die "资源 ns $EMS_NAME 已存在但没有同名 helm release（残留）——实例名冲突不自动处理，请人工清理（ems-uninstall 或手工）后重跑"
+    elif (( release_exists )); then
+        die "存在同名 helm release $EMS_NAME 但没有资源 ns（残留）——实例名冲突不自动处理，请人工清理后重跑"
     else
         log "名字可用（ns 与 release 均不存在）"
     fi
 
     if (( ! idempotent )); then
-        # ---- S1 释放节点 ----
-        local -a authorized=()
-        local ns_item
-        [[ -n "$EMS_RELEASE_NAMESPACES" ]] && IFS=',' read -ra authorized <<<"$EMS_RELEASE_NAMESPACES"
-        if [[ -n "$EMS_RELEASE_NAMESPACES" ]]; then
-            log "=== [2/3] 释放节点（已预授权：$EMS_RELEASE_NAMESPACES） ==="
-            local del_ns
-            for del_ns in "${authorized[@]}"; do
-                [[ -n "$del_ns" ]] || continue
-                log "删除命名空间 $del_ns（含 pod：$(kubectl get pods -n "$del_ns" --no-headers 2>/dev/null | awk '{printf "%s ", $1}')）"
-                if ! kubectl delete ns "$del_ns" --wait=true --timeout="${RELEASE_TIMEOUT_SECONDS}s" >/dev/null 2>&1; then
-                    log "命名空间 $del_ns 删除超时，强制清理残留 pod"
-                    kubectl delete pod -n "$del_ns" --all --grace-period=0 --force >/dev/null 2>&1 || true
-                    kubectl delete ns "$del_ns" --wait=true --timeout=60s >/dev/null 2>&1 \
-                        || die "命名空间 $del_ns 删除失败（可能有 kuberay/Finalizer 阻塞），需人工处理"
-                fi
-                sleep "$RESURRECT_CHECK_SECONDS"
-                if kubectl get ns "$del_ns" >/dev/null 2>&1 \
-                    || [[ -n "$(kubectl get pods -A -o json | python3 -c '
-import json, sys
-wanted = sys.argv[1]
-found = [p["metadata"]["name"] for p in json.load(sys.stdin).get("items", [])
-         if p.get("metadata", {}).get("namespace") == wanted]
-print("\n".join(found[:5]))
-' "$del_ns" 2>/dev/null)" ]]; then
-                    die "命名空间 $del_ns 删除后死而复生（kuberay/CI 自动重装？）；停手，需人工协调停掉自动部署后重跑"
-                fi
-                log "命名空间 $del_ns 已释放且未复活"
-            done
-        else
-            log "=== [2/3] 释放节点（未配置 EMS_RELEASE_NAMESPACES，跳过） ==="
-        fi
+        # ---- S1 释放节点（不再删业务 ns）----
+        # 原 EMS_RELEASE_NAMESPACES 预授权删 ns 机制已取消：删命名空间是集群级动作，
+        # 其 pod 可能落在非目标节点（波及他人）。目标节点内存不足时改由 ems-hugepages
+        # 的内存自愈阶梯按需驱逐**该节点上**的非 EMS pod（只动目标节点，不碰其他节点）。
+        log "=== [2/3] 释放节点（不再删除业务 ns；目标节点内存不足时由 ems-hugepages 按需驱逐本节点 pod） ==="
 
         # ---- S2 安装 ----
+        cleanup_stale_ems_labels "$label_key" "${target_nodes[@]}"
         log "=== [3/3] 打 label + helm install ==="
         local lbl_node
         for lbl_node in "${target_nodes[@]}"; do
@@ -375,7 +450,8 @@ print("\n".join(found[:5]))
 
     # ---- S3 验证 ----
     log "=== 验证（pod 全 Running&Ready + 每节点大页分配达标，最长 ${VERIFY_TIMEOUT_SECONDS}s） ==="
-    local vwaited=0 pod_summary='' hp_ok=0
+    local vwaited=0 pod_summary='' hp_ok=0 init_recreated=0 init_recreate_list=''
+    declare -A stuck_since=()
     while (( vwaited < VERIFY_TIMEOUT_SECONDS )); do
         sleep "$VERIFY_POLL_SECONDS"
         vwaited=$((vwaited + VERIFY_POLL_SECONDS))
@@ -398,6 +474,40 @@ print(f"{ready}/{len(pods)}")
         ready_count="${pod_summary%%/*}"
         total_count="${pod_summary##*/}"
         (( total_count >= 6 && ready_count == total_count )) && { hp_ok=1; break; }
+        # ---- init 卡住自愈（2026-10-22 实测两次）----
+        # vendor 的 ems-server init 容器 check-ems-init-pod-ready 用 requests 调 k8s API
+        # 且**没有 timeout**：一旦那条到 NodeLocal DNS 的 TCP 查询不被应答，它就永久阻塞
+        # （日志一行不写、CHECK_TIMEOUT 兜底失效），900s 干等只能等到超时。
+        # 处理：同一 pod 卡在非 Running 的 Init 阶段超过 INIT_STUCK_SECONDS → 删掉重建
+        #（DaemonSet 立刻拉起新 pod，新连接通常一次就过），最多 INIT_RECREATE_MAX 次。
+        local stuck_pod stuck_secs
+        while read -r stuck_pod; do
+            [[ -n "$stuck_pod" ]] || continue
+            if [[ -z "${stuck_since[$stuck_pod]:-}" ]]; then
+                stuck_since["$stuck_pod"]="$vwaited"
+                continue
+            fi
+            stuck_secs=$(( vwaited - ${stuck_since[$stuck_pod]} ))
+            (( stuck_secs >= INIT_STUCK_SECONDS )) || continue
+            if (( init_recreated >= INIT_RECREATE_MAX )); then
+                log "$stuck_pod 仍卡在 Init ${stuck_secs}s（重建次数已用尽 ${INIT_RECREATE_MAX}）"
+                continue
+            fi
+            init_recreated=$((init_recreated + 1))
+            log "$stuck_pod 卡在 Init ${stuck_secs}s（vendor init 容器 requests 无超时调 API，TCP DNS 卡住即永久阻塞）→ 删除 pod 重建（第 ${init_recreated}/${INIT_RECREATE_MAX} 次）"
+            kubectl -n "$EMS_NAME" delete pod "$stuck_pod" --grace-period=0 --force >/dev/null 2>&1 || true
+            init_recreate_list+="$stuck_pod "
+            unset "stuck_since[$stuck_pod]"
+        done < <(kubectl get pods -n "$EMS_NAME" -o json 2>/dev/null | python3 -c '
+import json, sys
+for pod in json.load(sys.stdin).get("items", []):
+    status = pod.get("status") or {}
+    if status.get("phase") == "Running":
+        continue
+    inits = status.get("initContainerStatuses") or []
+    if any("running" in (c.get("state") or {}) for c in inits):
+        print(pod["metadata"]["name"])
+')
     done
     ((hp_ok)) || die "pod 未在 ${VERIFY_TIMEOUT_SECONDS}s 内全部就绪（最后状态 $pod_summary；zk 抖动通常自愈，持续异常请看 describe）"
 
@@ -456,6 +566,9 @@ for rel in json.load(sys.stdin):
         break
 ' "$EMS_NAME" "$chart_name")"
     printf 'EMS_POD_HEALTH=%s\n' "$pod_summary"
+    printf 'EMS_INIT_POD_RECREATED=%s\n' "$(echo "${init_recreate_list// /,}" | sed 's/,$//')"
+    printf 'EMS_IDEMPOTENT=%s\n' "$idempotent"
+    printf 'EMS_STALE_LABELS_REMOVED=%s\n' "${stale_labels_removed:-}"
     printf 'EMS_STATUS=installed\n'
 }
 

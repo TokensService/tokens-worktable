@@ -320,7 +320,7 @@ sshpass）；未注入时在执行机本地运行（手工独立运行场景，�
 endpoint（`ip:port` 形态，如 `115.33.98.101:2224`），与集群 InternalIP 对不上；
 分发阶段会逐节点 SSH 采集内网身份（`hostname`/`hostname -I`）构建映射表随
 小写 env 下传，目标定位按「直接命中（内网 IP/节点名）→ endpoint 身份映射 →
-剥端口兜底」三级解析（gy1 内网标识行为不变；门禁 G-2 同样走该解析）。
+剥端口兜底」三级解析（gy1 内网标识行为不变）。
 输出三个部分：
 
 1. **集群巡检**（精简版，团队设备口径）：团队设备上的健康实例为主体——每实例
@@ -344,29 +344,26 @@ TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' TARGET_IP=192.168.0.128 ba
                                       # 模拟平台完整注入：自推送到目标节点执行
 ```
 
-**安装前门禁模式**（可选参数 `EMS_NAME` 激活，如 `ems8-8`）：在巡检输出后追加
-五连检——名字格式 / label 占用 / 同名 ns·release 残留（含版本比对，健康同名安装
-输出 `EMS_IDEMPOTENT=1` 幂等判定）/ **CPU·内存资源余量**（调度器 requests 口径：
-每节点 ≥41C/41Gi，且至少一节点再余 12C/20Gi 供 controller+zk；不关心节点上跑着
-什么业务，大页由 ems-hugepages step 另行保障）。任一不过即 exit 1 拦住下游
-ems-deploy；通过时输出 `EMS_GATE=passed` 及 `EMS_NAME/EMS_LABEL_KEY/EMS_NODES/
-EMS_IDEMPOTENT` 契约，供 ems-deploy 留空继承。可选参数 `EMS_RELEASE_NAMESPACES`
-（逗号分隔 ns）仅在门禁通过时原样透传下游（ems-deploy S1 据此删除授权 ns）。
+**零参数（2026-10 起）**：原「安装前门禁模式」（`EMS_NAME` 激活）与
+`EMS_RELEASE_NAMESPACES`（释放预授权透传）两个入参已下线——门禁判定整体搬到
+`ems-deploy` 的 `[1/3] 前置检查`（实例名冲突显式失败、空壳 label 自动摘除、
+健康同名实例判幂等重入），清场由 `ems-hugepages` 的内存自愈按需处理。好处是
+判定只有一处实现，不再需要跨 step 契约注入。
 
-纯巡检模式（未填 `EMS_NAME`）无任何行为分支：异常实例只在报告与
-`EMS_UNHEALTHY` 契约键中体现，不影响退出码。实际巡检节点需要 kubectl（可访问
+纯巡检：异常实例只在报告与 `EMS_UNHEALTHY` 契约键中体现，不影响退出码。实际巡检节点需要 kubectl（可访问
 集群）与 python3，helm 可选（缺失时版本信息降级为未知）；分发时执行机需要
 ssh/scp（解析 TARGET_HOSTS 需 python3，密码认证还需 sshpass）。退出码：0 正常；
-1 环境错误（门禁模式下含门禁不过）。单测：`test/test_ems_check.sh`。
+1 环境错误。单测：`test/test_ems_check.sh`。
 
 ## EMS 大页配置（ems-hugepages.sh）
 
 `ems-hugepages.sh` 是 EMS 安装前置的大页准备 **step 主脚本**（零参数）：目标
 2000Gi/节点（内部常量，1000Gi 规格已废弃）。三段式：①解析目标节点（平台注入
-`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做只读内存
-预检（`MemAvailable` < 剩余需求+200Gi 余量即秒级失败并输出 Top 进程/shm 诊断到
-stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发
-direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
+`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做内存预检
+（`MemAvailable` < 剩余需求+200Gi 余量时**先自愈再判**：见下），再写入
+`/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发 direct compaction，
+840s 兜底）；③刷新 allocatable（按需重启 kubelet；重启未生效先 `reset-failed`
+再重试，最多 3 次）+ 终验
 （大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
 到首个有 kubectl 的目标节点）；**跨 region（hd2 等）**：TARGET_IPS 为外网入口
 endpoint（ip:port）时，分发阶段采集内网身份映射（含该 endpoint 的登录凭据）
@@ -377,34 +374,64 @@ unreachable）。节点凭据三级解析：凭据表按内网 IP / ip:port 命�
 （按内网身份反查 endpoint 的 user/pass，连接走内网 22——映射里的 port 是外网
 NAT 端口）；先密钥认证（节点间通常 root 免密），失败且凭据带密码则走密码认证
 （执行宿主有 sshpass 用 sshpass，没有则用 SSH_ASKPASS 喂密码——GPU 节点普遍
-未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
-`EMS_HUGEPAGES_OK/RENEWED/KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检
-失败/终验不达标。单测：`test/test_ems_hugepages.sh`。
+未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。
+
+**预检自愈（2026-10）**：选用 EMS 安装即声明对目标节点的**完全使用权**，安装流程
+优先级最高，因此「可用内存不足」不再是终局，按阶梯自行清场后再判：
+① `drop_caches`（丢可回收页缓存）→ ② 清理 `/dev/shm` **无进程持有**的孤儿文件
+（≥1GiB；活跃 shm 段一律不动）→ ③ 驱逐该节点上**占内存最大的非 EMS 业务 pod**
+（按 requests 排序，最多 3 个；系统 ns / EMS 自身 ns / DaemonSet / mirror pod 不动；
+被驱逐 pod 由调度器重建到其他节点）。任一档够用即继续安装，动作记入契约
+`EMS_HUGEPAGES_HEALED=<节点>=<动作列表>`（如 `node-1=drop_caches,evicted:bigapp-0/big-0`）；
+阶梯用尽才失败。**红线：不重启节点、不 drain、不动其他节点与集群级自动部署源。**
+
+**池账目口径（2026-10 批量超额复盘后确定）**：达标判据一律用 **Σ(per-NUMA
+nr_hugepages)**（持久池），**不用 `HugePages_Total`**——后者 = 持久池 + surplus，
+surplus 是「别人映射出的超额页」（上一轮实例未清 / 并发操作 / 其他大页负载），
+拿它判到位会把池子顶到目标之上，之后内核还可能把 surplus 并进持久池（实测 2.0T
+目标跑成 2.4~2.5T，单节点白占 400~600Gi）。因此：
+- 起跑前 surplus 必须为 0（等 120s 后仍 >0 直接失败，不在地雷上开工）；
+- 轮询/终验发现持久池 > 目标 → 只回收「每 NUMA 空闲页」把池子收回目标（在用页
+  不动，实测秒级）；surplus > 0 时内核释放会卡死（已知行为）→ 不写、判失败；
+- 收不回去 → **失败**（不再绿灯放行）：内核不能运行时收缩大页，需重启节点回收。
+
+契约输出 `EMS_HUGEPAGES_OK/POOL_PAGES/RENEWED/KUBELET_RESTARTED/RECLAIMED/
+SURPLUS`（`EMS_HUGEPAGES_OVERPROVISIONED` 为兼容保留，成功路径恒为空——真超额
+现在直接失败）。退出码：0 正常；1 环境错误/预检失败/终验不达标/超额收不回。
+单测：`test/test_ems_hugepages.sh`。
 
 ## EMS 安装（ems-deploy.sh）
 
-`ems-deploy.sh` 是 EMS 部署执行 **step 主脚本**（参数 `EMS_NAME` 必填——显式
-填写或经前置 ems-check 门禁契约继承；`EMS_RELEASE_NAMESPACES` 可选，授权后
-S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥2）校验 + 盲装防线（同名
-ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删除授权 ns，
-默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
+`ems-deploy.sh` 是 EMS 部署执行 **step 主脚本**（唯一入参 `EMS_NAME`，必填，显式
+填写如 `ems13-13`）。流程：S0 名字格式与节点数（≥1，单机可装）校验；**P0/S1
+前置检查（实例名冲突判定）**——同名 ns+release 都在时比 chart 版本 + pod 健康度，
+一致且健康 = 幂等重入（跳过安装仅验证），否则显式失败；只有 ns 或只有 release
+= 残留，同样显式失败（实例名冲突不自动处理）；S1 不再删除业务 ns（原
+`EMS_RELEASE_NAMESPACES` 预授权机制取消，内存不足时由 ems-hugepages 按需驱逐
+**目标节点上**的非 EMS pod）；S2 摘空壳 label（见下）+ 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
 （release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
 release 名**）；S3 验证 pod 全 Running&Ready + 每节点大页分配达标（最长 900s）。
 **跨 region（hd2 等）**：TARGET_IPS 为外网入口 endpoint（ip:port）时，分发阶段
 采集内网身份映射后三级解析（直接命中 → endpoint 映射 → 剥端口），label 打在
 解析出的集群节点名上，gy1 内网行为不变。
 契约输出 `EMS_NAME/EMS_NAMESPACE/EMS_LABEL_KEY/EMS_NODES/EMS_CHART_VERSION/
-EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证失败。
+EMS_POD_HEALTH/EMS_IDEMPOTENT/EMS_STALE_LABELS_REMOVED/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证失败。
 
 **chart 分发**：安装版本由与本脚本同目录的 `ems-chart/`（Chart.yaml 26.8.0-b6）
 整体决定；**该目录不入 git**（含厂商证书私钥与密码，见 .gitignore），随部署
 环境分发——平台机 scripts 目录、执行机需与本脚本同目录放置（自检缺失即报
 `未找到仓内 chart` 拒跑）。升级 chart = 替换该目录后重跑（同名 release 版本
-不一致由前置门禁拦截）。单测：`test/test_ems_deploy.sh`。
+不一致由前置检查拦截）。单测：`test/test_ems_deploy.sh`。
 
-**推荐编排**（三段，平台已验证）：`ems-check`（EMS_NAME=新实例名，门禁）→
-`ems-hugepages`（大页准备，幂等可单独重跑）→ `ems-deploy`（EMS_NAME/
-EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用平台注入）。
+**推荐编排**（三段）：`ems-check`（零参数只读巡检）→ `ems-hugepages`（大页准备，
+幂等可单独重跑）→ `ems-deploy`（`EMS_NAME` 必填；TARGET_IPS 留空用平台注入）。
+
+**空壳 label 清理（2026-10）**：实例名派生的 `ems<N>=true` 若残留在**非目标节点**
+（该节点上没有 `ems<N>` / `ems<N>-<M>` ns 的 pod，即只剩 label 的皮），会通过
+nodeSelector 把新实例的 pod 吸到旧节点上、白吃非目标机的大页与内存。S2 在打 label
+前自动摘除这类空壳（`kubectl label node <n> ems<N>-`），记入契约
+`EMS_STALE_LABELS_REMOVED=`。判定严格：**该节点上有本实例名系 ns 的 pod 就一律不摘**
+——那是活实例，属实例名冲突，由前置检查显式失败（不自动处理）。
 
 ## EMS 卸载（ems-uninstall.sh）
 

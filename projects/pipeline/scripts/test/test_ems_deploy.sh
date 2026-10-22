@@ -3,10 +3,9 @@ set -euo pipefail
 
 # ems-deploy.sh 契约测试：mock kubectl/helm/ssh/scp/sleep（带状态标记的 stateful mock），
 # 覆盖：① 全新安装 happy path（释放/label/helm 参数/契约；大页在 ems-hugepages step）
-#      ② 同名 ns/release 残留且无门禁幂等判定（EMS_IDEMPOTENT≠1）→ 拒绝盲装
-#      ③ 授权释放（EMS_RELEASE_NAMESPACES）后安装
-#      ④ 门禁判定幂等（EMS_IDEMPOTENT=1）→ 跳过安装仅验证。
-#      （label 占用/节点业务占用门禁已上移 ems-check，见 test_ems_check.sh 门禁场景）
+#      ② 同名 release 无资源 ns（残留）→ 显式失败；②b 有 ns 无 release → 显式失败
+#      ③ chart 版本与仓内不一致 → 显式失败；③b 同名实例不健康 → 显式失败
+#      ④ 同名实例健康且版本一致 → 幂等重入（跳过安装仅验证）。
 # 全程不接触真实集群/真实 sysfs。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,6 +31,8 @@ YAML
   chart_created=1
 fi
 
+repo_chart="$(sed -n 's/^version:[[:space:]]*//p' "$chart_dir/Chart.yaml" | head -1 | tr -d '"')"
+
 # ---- 基础 fixtures（各场景按需覆写） ----------------------------------------------
 cat >"$tmp/nodes.json" <<'JSON'
 {"items": [
@@ -53,6 +54,9 @@ mk_pod() { # <name> <ns> <node> <phase:running|pending>
     "$1" "$2" "$3" "$([ "$4" = running ] && echo Running || echo Pending)" "$([ "$4" = running ] && echo True || echo False)"
 }
 
+cat >"$tmp/ems_pods_bad.json" <<JSON
+{"items": [$(mk_pod ems-server-node-1 ems13-13 node-1 running | sed 's/"ready": true/"ready": false/; s/"status": "True"/"status": "False"/')]}
+JSON
 cat >"$tmp/pods_clean.json" <<JSON
 {"items": [$(mk_pod ems-zookeeper-0 kube-system node-1 running)]}
 JSON
@@ -115,12 +119,14 @@ case "\$*" in
     if [[ -e "\$FIXTURES/marker_installed" || -e "\$FIXTURES/marker_preset" ]]; then cat "\$FIXTURES/pods_installed.json"
     else cat "\$FIXTURES/pods_all.json"; fi ;;
   *'get pods -n ems13-13'*)
-    if [[ -e "\$FIXTURES/marker_installed" || -e "\$FIXTURES/marker_preset" ]]; then cat "\$FIXTURES/ems_pods.json"
+    if [[ -e "\$FIXTURES/pods_unhealthy" ]]; then cat "\$FIXTURES/ems_pods_bad.json"
+    elif [[ -e "\$FIXTURES/marker_installed" || -e "\$FIXTURES/marker_preset" ]]; then cat "\$FIXTURES/ems_pods.json"
     else echo '{"items": []}'; fi ;;
   *'get pods -n busy-ns'*) [[ -e "\$FIXTURES/marker_deleted" ]] || echo 'busy-app-0   1/1   Running   0' ;;
   *'delete ns busy-ns'*) touch "\$FIXTURES/marker_deleted"; cp "\$FIXTURES/pods_clean.json" "\$FIXTURES/pods_all.json" ;;
   *'delete ns '*) exit 0 ;;
   *'label node '*'ems13=true'*) touch "\$FIXTURES/marker_labeled" ;;
+  *'label node '*'ems13-'*) echo "label-removed: \$*" >>"\$FIXTURES/kubectl.log" ;;   # 空壳 label 清理
   *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -173,7 +179,7 @@ PATH="$tmp/bin:$PATH"
 export PATH
 
 reset_state() {
-  rm -f "$FIXTURES"/marker_* "$FIXTURES"/{kubectl,helm,ssh}.log
+  rm -f "$FIXTURES"/marker_* "$FIXTURES"/pods_unhealthy "$FIXTURES"/{kubectl,helm,ssh}.log
   cp "$FIXTURES/pods_clean.json" "$FIXTURES/pods_all.json"
   echo '[]' >"$FIXTURES/helm.json"
   echo 0 >"$FIXTURES/hp_total"
@@ -205,43 +211,58 @@ grep -Fq "EMS_CHART_VERSION=${chart_version}" <<<"$out"   # 随 Chart.yaml（fix
 grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
 grep -Fq 'EMS_STATUS=installed' <<<"$out"
 
-# ==== 场景②：同名 ns/release 残留且无门禁幂等判定 → 拒绝盲装 =========
+# ==== 场景②：同名 release 但资源 ns 不存在（残留）→ 显式失败 ============
 reset_state
-touch "$FIXTURES/marker_preset"
-cat >"$FIXTURES/helm.json" <<'JSON'
-[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-26.8.0-b6", "app_version": "26.8.0-b6", "status": "deployed"}]
-JSON
+printf '[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-%s", "status": "deployed"}]\n' "$repo_chart" >"$FIXTURES/helm.json"
 rc=0
 TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script" >/dev/null 2>"$tmp/err2" || rc=$?
 [[ "$rc" == 1 ]] || { echo "scenario2 expected exit 1, got $rc" >&2; exit 1; }
-grep -Fq '未获门禁幂等判定' "$tmp/err2"
-grep -Fq '前置 ems-check' "$tmp/err2"
-#（label 占用 / 节点业务占用门禁已上移 ems-check，见 test_ems_check.sh 门禁场景）
+grep -Fq '存在同名 helm release ems13-13 但没有资源 ns（残留）' "$tmp/err2"
+grep -Fq '实例名冲突不自动处理' "$tmp/err2"
+! grep -Fq 'helm install' "$FIXTURES/helm.log" 2>/dev/null
 
-# ==== 场景③：授权释放（EMS_RELEASE_NAMESPACES）后安装 ======================
+# ==== 场景②b：资源 ns 存在但无同名 release（残留）→ 显式失败 ============
 reset_state
-cp "$FIXTURES/pods_busy.json" "$FIXTURES/pods_all.json"
-out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 EMS_RELEASE_NAMESPACES=busy-ns bash "$script") || {
-  echo "scenario3b failed:" >&2; echo "$out" >&2; exit 1
-}
-grep -Fq '删除命名空间 busy-ns' <<<"$out"
-grep -Fq '未复活' <<<"$out"
-grep -Fq 'helm install ems13-13' <<<"$out"
-! grep -Fq 'hugePages.num' <<<"$out"        # 大页固定 2000Gi（chart values 内置），不注入覆盖
-grep -Fq 'EMS_STATUS=installed' <<<"$out"
+touch "$FIXTURES/marker_preset"      # kubectl get ns ems13-13 返回存在
+rc=0
+TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script" >/dev/null 2>"$tmp/err2b" || rc=$?
+[[ "$rc" == 1 ]] || { echo "scenario2b expected exit 1, got $rc" >&2; exit 1; }
+grep -Fq '资源 ns ems13-13 已存在但没有同名 helm release（残留）' "$tmp/err2b"
 
-# ==== 场景④：门禁判定幂等（EMS_IDEMPOTENT=1）→ 跳过安装仅验证 =========
+# ==== 场景③：同名实例 chart 版本与仓内不一致 → 显式失败 ================
 reset_state
 touch "$FIXTURES/marker_preset"
 cat >"$FIXTURES/helm.json" <<'JSON'
-[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-26.8.0-b6", "app_version": "26.8.0-b6", "status": "deployed"}]
+[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-9.9.9-old", "status": "deployed"}]
 JSON
-out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 EMS_IDEMPOTENT=1 bash "$script") || {
+rc=0
+TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script" >/dev/null 2>"$tmp/err3" || rc=$?
+[[ "$rc" == 1 ]] || { echo "scenario3 expected exit 1, got $rc" >&2; exit 1; }
+grep -Fq '已安装 chart 9.9.9-old，与仓内 chart' "$tmp/err3"
+grep -Fq '升级是独立操作' "$tmp/err3"
+
+# ==== 场景③b：同名实例不健康 → 显式失败（实例名冲突不自动处理）========
+reset_state
+touch "$FIXTURES/marker_preset"
+touch "$FIXTURES/pods_unhealthy"
+printf '[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-%s", "status": "deployed"}]\n' "$repo_chart" >"$FIXTURES/helm.json"
+rc=0
+TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script" >/dev/null 2>"$tmp/err3b" || rc=$?
+[[ "$rc" == 1 ]] || { echo "scenario3b expected exit 1, got $rc" >&2; exit 1; }
+grep -Fq '实例 ems13-13 已存在但不健康' "$tmp/err3b"
+grep -Fq '实例名冲突不自动处理' "$tmp/err3b"
+
+# ==== 场景④：同名实例健康且版本一致 → 幂等重入（跳过安装仅验证）=======
+reset_state
+touch "$FIXTURES/marker_preset"
+printf '[{"name": "ems13-13", "namespace": "ems13", "chart": "ems-%s", "status": "deployed"}]\n' "$repo_chart" >"$FIXTURES/helm.json"
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script") || {
   echo "scenario4 failed:" >&2; echo "$out" >&2; exit 1
 }
 grep -Fq '幂等重入' <<<"$out"
 grep -Fq '跳过安装，仅验证' <<<"$out"
 grep -Fq 'helm install' <<<"$out" && { echo 'scenario4: must not reinstall' >&2; exit 1; }
+grep -Fq 'EMS_IDEMPOTENT=1' <<<"$out"
 grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
 grep -Fq 'EMS_STATUS=installed' <<<"$out"
 
@@ -251,7 +272,7 @@ rc=0
 TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME= bash "$script" >/dev/null 2>"$tmp/err5" || rc=$?
 [[ "$rc" == 1 ]] || { echo "scenario5 expected exit 1, got $rc" >&2; exit 1; }
 grep -Fq 'EMS_NAME 为空' "$tmp/err5"
-grep -Fq 'ems-check 门禁契约注入' "$tmp/err5"
+grep -Fq '请在 step 参数里显式填写实例名' "$tmp/err5"
 
 # ==== 场景⑤：跨 region（hd2 形态）——TARGET_IPS 为外网 endpoint，身份映射解析 ====
 tmp9=$(mktemp -d)
@@ -306,6 +327,7 @@ case "\$*" in
     if [[ -e "\$FIXTURES/marker_installed" ]]; then cat "\$FIXTURES/ems_pods.json"
     else echo '{"items": []}'; fi ;;
   *'label node '*'ems13=true'*) touch "\$FIXTURES/marker_labeled" ;;
+  *'label node '*'ems13-'*) echo "label-removed: \$*" >>"\$FIXTURES/kubectl.log" ;;   # 空壳 label 清理
   *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -367,4 +389,63 @@ grep -Fq 'EMS_NODES=115.33.98.101:2224,115.33.98.101:2225' <<<"$out"
 grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
 rm -rf "$tmp9"
 
-echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint)'
+# ==== 场景⑥：单机安装（≥1 节点即放行，不再要求 2 台） ==============
+reset_state
+out=$(TARGET_HOSTS='[{"ip":"10.0.0.1","user":"root"}]' TARGET_IPS='["10.0.0.1"]' EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario6 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'helm install ems13-13' <<<"$out"
+grep -Fq 'label：node-1 ems13=true' <<<"$out"
+! grep -Fq 'label：node-2 ems13=true' <<<"$out"     # 单机只给目标节点打 label
+grep -Fq 'EMS_NODES=10.0.0.1' <<<"$out"
+! grep -Fq 'EMS_NODES=10.0.0.1,' <<<"$out"          # 契约只含 1 个节点
+grep -Fq 'EMS_STATUS=installed' <<<"$out"
+
+# ==== 场景⑦：空壳 label（非目标节点只剩 ems13=true，无 pod 无 release）→ 自动摘 ====
+reset_state
+cp "$FIXTURES/nodes.json" "$tmp/nodes_backup.json"
+add_label_node() { # 往 nodes.json 追加一台带 ems13=true 的非目标节点 node-5
+  cp "$tmp/nodes_backup.json" "$FIXTURES/nodes.json"
+  python3 - "$FIXTURES/nodes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding='utf-8'))
+doc['items'].append({"metadata": {"name": "node-5", "labels": {"ems13": "true"}},
+                     "status": {"addresses": [{"type": "Hostname", "address": "node-5"},
+                                              {"type": "InternalIP", "address": "10.0.0.5"}],
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "capacity": {"hugepages-2Mi": "2000Gi"},
+                                "allocatable": {"hugepages-2Mi": "0"}}})
+json.dump(doc, open(path, 'w'))
+PY
+}
+add_label_node
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario7 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq '空壳 label 清理：node-5 ems13-（该节点无本实例 pod、无 release，防 pod 漂到非目标节点）' <<<"$out"
+grep -Fq 'label-removed: label node node-5 ems13-' "$FIXTURES/kubectl.log"
+grep -Fq 'EMS_STALE_LABELS_REMOVED=node-5' <<<"$out"
+! grep -Fq 'label-removed: label node node-1 ems13-' "$FIXTURES/kubectl.log"   # 目标节点不动
+
+# ==== 场景⑦b：同一节点上仍有「本实例名系」ns 的 pod（活实例）→ 不摘 label ========
+reset_state
+add_label_node
+python3 - "$FIXTURES/pods_all.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding='utf-8'))
+doc['items'].append({"metadata": {"name": "old-worker-0", "namespace": "ems13-99"},
+                     "spec": {"nodeName": "node-5", "containers": [{"name": "c"}]},
+                     "status": {"phase": "Running"}})
+json.dump(doc, open(path, 'w'))
+PY
+rc=0
+TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script" >/dev/null 2>"$tmp/err7b" || rc=$?
+[[ "$rc" == 1 ]] || { echo "scenario7b expected exit 1, got $rc" >&2; exit 1; }
+grep -Fq 'label ems13=true 还挂在非目标节点：node-5' "$tmp/err7b"
+grep -Fq '实例名冲突不自动处理' "$tmp/err7b"
+! grep -Fq 'label-removed: label node node-5' "$FIXTURES/kubectl.log"   # 有活实例 pod → 不摘 label
+cp "$tmp/nodes_backup.json" "$FIXTURES/nodes.json"
+
+echo 'PASS: ems-deploy contract (fresh install, residual release/ns refuse, chart-version mismatch refuse, unhealthy-instance refuse, healthy idempotent re-entry, empty-name hint, cross-region endpoint, single-node install, stale-label cleanup, live-instance label conflict refuse)'
