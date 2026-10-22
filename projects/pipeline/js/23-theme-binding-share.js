@@ -59,7 +59,7 @@ function updateStageFromEditor(e){
   else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（无超时） */
   else if(f==='skip') s.skip=e.target.checked;
   else if(f==='parallel') s.parallel=e.target.checked;
-  else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
+  else if(f==='sched'){ if(s.kind==='http'){ s.sched = e.target.checked ? null : {}; } renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时。仅 http 任务类型支持本地执行：非 http 阶段即使收到外部置空（旧 DOM/分享导入残留）也不改 sched */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
   else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }

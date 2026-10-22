@@ -30,6 +30,7 @@ trap 'rm -rf "$work_dir"' EXIT
 
 # ---- 解析 raw 地址：显式 MODEL_ARCH_URL 优先，其次按 github.com 的 GIT_URL 推导 ----
 raw_url=''
+api_url=''
 if [[ -n "$MODEL_ARCH_URL" ]]; then
   raw_url="${MODEL_ARCH_URL//\{branch\}/$GIT_BRANCH}"
 elif [[ -n "${GIT_URL:-}" ]]; then
@@ -44,6 +45,8 @@ elif [[ -n "${GIT_URL:-}" ]]; then
   # slug 必须恰为 org/repo 两段
   if [[ -n "$gh_slug" && "$gh_slug" == */* && "${gh_slug#*/}" != */* ]]; then
     raw_url="https://raw.githubusercontent.com/${gh_slug}/${GIT_BRANCH}/${MODEL_ARCH_PATH}"
+    # API contents 不走 CDN（raw 对新提交有分钟级滞后，会把新加的 arch 漏掉）
+    api_url="https://api.github.com/repos/${gh_slug}/contents/${MODEL_ARCH_PATH}?ref=${GIT_BRANCH}"
   fi
 fi
 
@@ -53,8 +56,14 @@ if [[ -n "$raw_url" ]]; then
   command -v curl >/dev/null 2>&1 || die "未找到 curl，且 GIT_URL 非 github.com 无法推导克隆地址"
   auth_args=()
   [[ -n "${GIT_PASSWORD:-}" ]] && auth_args=(-H "Authorization: Bearer ${GIT_PASSWORD}")
-  curl -fsSL --max-time 20 ${auth_args[@]+"${auth_args[@]}"} "$raw_url" -o "$work_dir/model_arch.yaml" \
-    || die "拉取 model_arch.yaml 失败：$raw_url"
+  fetched=''
+  if [[ -n "${api_url:-}" ]] && curl -fsSL --max-time 20 ${auth_args[@]+"${auth_args[@]}"} \
+       -H 'Accept: application/vnd.github.raw' "$api_url" -o "$work_dir/model_arch.yaml"; then
+    fetched='api'
+  elif curl -fsSL --max-time 20 ${auth_args[@]+"${auth_args[@]}"} "$raw_url" -o "$work_dir/model_arch.yaml"; then
+    fetched='raw'
+  fi
+  [[ -n "$fetched" ]] || die "拉取 model_arch.yaml 失败：${api_url:-$raw_url}"
   arch_file="$work_dir/model_arch.yaml"
 else
   # ---- 兜底：git 浅克隆（任意远端，含私有镜像；凭据经 GIT_ASKPASS 注入）----
@@ -80,14 +89,15 @@ ASKPASS
   [[ -f "$arch_file" ]] || die "分支 $GIT_BRANCH 中不存在 $MODEL_ARCH_PATH"
 fi
 
-# ---- 解析：stdlib 正则提取顶层 arch_name 键（命名规则 <...>-<n>P<m>D 或 <...>-<n>P），
+# ---- 解析：stdlib 正则提取顶层 arch_name 键（命名规则 <...>-<n>P<m>D 或 <...>-<n>P，
+#      拓扑后缀之后还允许跟任意 -<tag> 段，如 -6G / -PP2TP2-8G 等区分标签），
 #      规避对 PyYAML 的依赖；跳过注释/缩进行/无拓扑后缀的元数据键 ----
 python3 - "$arch_file" <<'PY'
 import re
 import sys
 
 key_re = re.compile(r"^([A-Za-z0-9][\w.-]*):[ \t]*(?:#.*)?$")
-topo_re = re.compile(r"-\d+P(\d+D)?$")
+topo_re = re.compile(r"-\d+P(?:\d+D)?(?:-[A-Za-z0-9]+)*$")
 
 try:
     text = open(sys.argv[1], encoding="utf-8-sig").read()

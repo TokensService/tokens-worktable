@@ -246,12 +246,22 @@ test('buildUnloadHandoffPlan（队列条目）：跳过预设任务、剥 sched 
   assert.equal(plan.tag, null, '排队条目无运行 tag：服务端执行时自建历史记录');
 });
 
-test('buildSuffixPlan 只收 sched（定时）阶段：「需本地运行」阶段不进服务端后缀计划', () => {
+test('buildSuffixPlan：非 http 阶段（即使残留 sched=null 本地运行标记）也进服务端后缀计划，仅 http 且 sched=null 的需本地运行阶段不进', () => {
   const h = makeContext({});
   const rc = runningRc();
   const plan = JSON.parse(JSON.stringify(h.context.buildSuffixPlan(rc, 0, { activate: false })));   // vm 域对象 JSON 往返归一
-  assert.deepEqual([...plan.stages.map(s => s.id)], ['c'], '非 sched 阶段不进后缀计划（includeLocal 已随关页移交移除）');
+  assert.deepEqual([...plan.stages.map(s => s.id)], ['a', 'b', 'c'], '非 http（simulate）阶段即使残留 sched=null 也按支持定时进服务端计划（本地运行仅 http 类型成立）');
   assert.equal(plan.at, 0, 'activate:false 生成休眠计划');
+});
+
+test('buildSuffixPlan：http 且 sched=null（需本地运行）阶段不进服务端后缀计划', () => {
+  const h = makeContext({});
+  const rc = runningRc({ stages: [
+    { id: 'a', name: '本地HTTP', kind: 'http', sched: null, url: { url: 'http://intranet/job/x' } },
+    { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
+  ] });
+  const plan = JSON.parse(JSON.stringify(h.context.buildSuffixPlan(rc, 0, { activate: false })));
+  assert.deepEqual([...plan.stages.map(s => s.id)], ['c'], 'http 需本地运行阶段不进服务端计划，服务端只收支持定时的阶段');
 });
 
 test('pagehide 收尾后 beacon 批量释放本页节点租约：移交计划才不用等 TTL 才能拿到节点', async () => {
