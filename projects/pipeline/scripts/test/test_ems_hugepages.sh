@@ -491,6 +491,10 @@ grep -Fq 'EMS_HUGEPAGES_POOL_PAGES=1024000' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_RECLAIMED=186583' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_SURPLUS=' <<<"$out"
 grep -Fq 'reclaim: converged' "$FIXTURES/ssh.log"
+grep -Fq '配额文件已同步为回收后的值（原子替换）' <<<"$out"          # 回收后同步配额（防只增不减写入器顶高）
+grep -Fq '已停写入器（避免旧配额把池子再顶回去）' <<<"$out"
+grep -Fq '/tmp/ems_hp_quota.tmp' "$FIXTURES/ssh.log"                  # 原子替换而非截断重写
+grep -Fq 'rm -f /tmp/ems_hp_until' "$FIXTURES/ssh.log"
 
 # ==== 场景⑭：回收首轮差零头（1,024,006）→ 有界重试第 2 轮收敛 ==================
 reset_state
