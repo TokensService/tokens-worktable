@@ -13,7 +13,9 @@ set -euo pipefail
 #         内网 InternalIP（外网入口在集群内不可路由），外网地址不得作为 ssh 目标
 #      ⑨ 写入器存活窗口早于压实完成退出 → 重启自愈后到位（243 现场回放）
 #      ⑩ 配额重算算法：NUMA 容量上限 + buddy 高阶块比例分配、总量守恒。
-#      ⑪ 超额护栏：节点物理大页 > 目标 → 告警 + 契约 EMS_HUGEPAGES_OVERPROVISIONED（不失败）。
+#      ⑪ 池子超额且无空闲页（全在用）→ 运行时无法回收 → 失败（重启节点兜底）。
+#      ⑫ 池子超额但有空闲页（2.37T 现场形态）→ 自动回收空闲页收敛回 2000Gi，契约记 RECLAIMED。
+#      ⑬ 起跑前 surplus > 0（Total 含他人超额页）→ 等待后仍不消 → 拒绝开工（防账目跑偏）。
 # 全程不接触真实集群/真实 sysfs。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -105,10 +107,38 @@ case "\$cmd" in
     # 写入器存活检查：fixture 标记「写入器已退出」时才为真
     [[ -e "\$FIXTURES/hp_exit_\$ip" ]] ;;
   *'buddyinfo'*) exit 1 ;;                          # 配额重算采集：默认失败（静默跳过）
-  *'HugePages_Free'*)
-    # 超额护栏的物理快照：Total/Free + 每 NUMA（hp 与 hp_numa_* 由用例预置）
-    printf 'HugePages_Total:    %s\nHugePages_Free:     0\n' "\$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)"
-    for n in 0 1 2 3; do printf 'numa node%s %s\n' "\$n" "\$(cat "\$FIXTURES/hp_numa_\${n}_\$ip" 2>/dev/null || echo 0)"; done ;;
+  *'HugePages_Surp'*) cat "\$FIXTURES/surp_\$ip" 2>/dev/null || echo 0 ;;   # 远程侧带 awk 取列，mock 只回数字
+  *'test -f /tmp/ems_hp_reclaim_done'*) [[ -e "\$FIXTURES/reclaim_done_\$ip" ]] ;;
+  *'ems_hp_reclaim_done'*)
+    # 超额回收（写小 nr_hugepages）：stuck 标记 → 不生效（模拟内核释放阻塞）
+    if [[ "\$cmd" != *'/nr_hugepages'* ]]; then echo 'reclaim: bad-target' >>"\$FIXTURES/ssh.log"   # 写入目标必须是 nr_hugepages 文件
+    elif [[ -e "\$FIXTURES/reclaim_stuck_\$ip" ]]; then echo 'reclaim: stuck' >>"\$FIXTURES/ssh.log"
+    else
+      echo 'reclaim: converged' >>"\$FIXTURES/ssh.log"
+      cnt=\$(cat "\$FIXTURES/reclaim_cnt_\$ip" 2>/dev/null || echo 0); cnt=\$(( cnt + 1 )); echo \$cnt >"\$FIXTURES/reclaim_cnt_\$ip"
+      if [[ -e "\$FIXTURES/reclaim_partial_\$ip" && \$cnt -eq 1 ]]; then
+        echo 1024006 >"\$FIXTURES/hp_\$ip"; echo 1024006 >"\$FIXTURES/hp_free_\$ip"   # 首轮差 6 页零头（全部空闲）
+      else
+        echo 1024000 >"\$FIXTURES/hp_\$ip"; rm -f "\$FIXTURES/hp_free_\$ip"
+      fi
+      rm -f "\$FIXTURES"/hp_numa_*"\$ip"
+      touch "\$FIXTURES/reclaim_done_\$ip"
+    fi ;;
+  *'free_hugepages'*)
+    # 每 NUMA 账目（hp_numa_<n>_<ip> / hp_numa_free_<n>_<ip> 由用例预置；未预置则把
+    # 全局 hp_<ip> 均分到 4 个 NUMA，Σ 与全局保持一致）
+    hp_total="\$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)"
+    if [[ -e "\$FIXTURES/hp_numa_0_\$ip" ]]; then
+      for n in 0 1 2 3; do
+        printf '/sys/devices/system/node/node%s/hugepages/hugepages-2048kB %s %s\n' "\$n" \
+          "\$(cat "\$FIXTURES/hp_numa_\${n}_\$ip" 2>/dev/null || echo 0)" \
+          "\$(cat "\$FIXTURES/hp_numa_free_\${n}_\$ip" 2>/dev/null || echo 0)"
+      done
+    else
+      hp_q=\$(( hp_total / 4 )); hp_last=\$(( hp_total - hp_q * 3 ))
+      for n in 0 1 2; do printf '/sys/devices/system/node/node%s/hugepages/hugepages-2048kB %s 0\n' "\$n" "\$hp_q"; done
+      printf '/sys/devices/system/node/node3/hugepages/hugepages-2048kB %s %s\n' "\$hp_last" "\$(cat "\$FIXTURES/hp_free_\$ip" 2>/dev/null || echo 0)"
+    fi ;;
   *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
   *'nr_hugepages'*)
     # 后台写入器（启动/重启）：置该节点大页为达标；fixture 标记 hp_late 时本次启动
@@ -139,7 +169,7 @@ PATH="$tmp/bin:$PATH"
 export PATH
 
 reset_state() {
-  rm -f "$FIXTURES"/marker_* "$FIXTURES"/hp_* "$FIXTURES"/memavail_* "$FIXTURES"/{kubectl,ssh}.log
+  rm -f "$FIXTURES"/marker_* "$FIXTURES"/hp_* "$FIXTURES"/surp_* "$FIXTURES"/reclaim_* "$FIXTURES"/memavail_* "$FIXTURES"/{kubectl,ssh}.log
 }
 
 HOSTS='[{"ip":"10.0.0.1","user":"root"},{"ip":"10.0.0.2","user":"root"}]'
@@ -160,7 +190,7 @@ grep -Fq 'node-1: 重启 kubelet 刷新大页 allocatable' <<<"$out"
 grep -Fq 'kubelet-restarted @10.0.0.1' "$FIXTURES/ssh.log"
 grep -Fq 'kubelet-restarted @10.0.0.2' "$FIXTURES/ssh.log"
 grep -Fq 'node-1: Ready 且 allocatable 2000Gi 达标' <<<"$out"
-grep -Fq 'node-1: 大页 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
+grep -Fq 'node-1: 持久池 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
 grep -Fq 'EMS_HUGEPAGE_TARGET_GIB=2000' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_RENEWED=node-1,node-2' <<<"$out"
@@ -322,6 +352,12 @@ case "\$cmd" in
     eval "\$cmd" ;;
   *'MemAvailable'*)
     printf 'MemTotal:       32959684 kB\nMemAvailable:    3221225472 kB\ntmpfs  1.6T  100G   1.5T   7%% /dev/shm\n' ;;
+  *'HugePages_Surp'*) echo 0 ;;
+  *'free_hugepages'*)
+    hp_total="\$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)"
+    hp_q=\$(( hp_total / 4 )); hp_last=\$(( hp_total - hp_q * 3 ))
+    for n in 0 1 2; do printf '/sys/devices/system/node/node%s/hugepages/hugepages-2048kB %s 0\n' "\$n" "\$hp_q"; done
+    printf '/sys/devices/system/node/node3/hugepages/hugepages-2048kB %s 0\n' "\$hp_last" ;;
   *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
   *'nr_hugepages'*) echo 1024000 >"\$FIXTURES/hp_\$ip" ;;
   *'systemctl restart kubelet'*)
@@ -349,7 +385,7 @@ grep -Fq '目标节点：115.33.98.101:2224 → tokens-engine-bnt3-13lrp（经 e
 grep -Fq '目标节点：115.33.98.101:2225 → tokens-engine-bnt3-9d0ee（经 endpoint 身份映射，内网 192.168.31.120 访问）' <<<"$out"
 grep -Fq 'tokens-engine-bnt3-13lrp: 大页到位（1024000 页，' <<<"$out"
 grep -Fq 'tokens-engine-bnt3-9d0ee: Ready 且 allocatable 2000Gi 达标' <<<"$out"
-grep -Fq 'tokens-engine-bnt3-9d0ee: 大页 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
+grep -Fq 'tokens-engine-bnt3-9d0ee: 持久池 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_RENEWED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
 grep -Fq 'EMS_KUBELET_RESTARTED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
@@ -428,16 +464,62 @@ echo 373577 >"$FIXTURES/hp_numa_2_10.0.0.1"
 echo 330790 >"$FIXTURES/hp_numa_3_10.0.0.1"
 echo 1024000 >"$FIXTURES/hp_10.0.0.2"            # node-2 正常（恰好达标）
 touch "$FIXTURES/marker_kubelet_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.2"
-out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
-  echo "scenario11 failed:" >&2; echo "$out" >&2; exit 1
+rc=0; out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" 2>&1) || rc=$?
+(( rc == 1 )) || { echo "scenario11 应失败（运行时无法收缩），实际 rc=$rc" >&2; echo "$out" >&2; exit 1; }
+grep -Fq 'node-1: 持久池 1312855 页' <<<"$out"
+grep -Fq 'node-1 池子超额 288855 页，但空闲页为 0（全部在用）——运行时无法收缩' <<<"$out"
+grep -Fq 'node-1 持久池 1312855 页 > 目标 1024000 页且运行时无法回收' <<<"$out"
+grep -Fq '需重启节点回收后重跑本 step' <<<"$out"
+! grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out" || { echo 'scenario11 不应输出成功契约' >&2; exit 1; }
+
+# ==== 场景⑫：超额但有空闲页（2.37T 现场形态）→ 自动回收收敛回 2000Gi ==========
+reset_state
+echo 1242346 >"$FIXTURES/hp_10.0.0.1"           # 物理池 2.37T（47.71 现场值）
+echo 339548 >"$FIXTURES/hp_numa_0_10.0.0.1"; echo 83548 >"$FIXTURES/hp_numa_free_0_10.0.0.1"
+echo 359035 >"$FIXTURES/hp_numa_1_10.0.0.1"; echo 103035 >"$FIXTURES/hp_numa_free_1_10.0.0.1"
+echo 299331 >"$FIXTURES/hp_numa_2_10.0.0.1"
+echo 244432 >"$FIXTURES/hp_numa_3_10.0.0.1"
+echo 1024000 >"$FIXTURES/hp_10.0.0.2"            # node-2 恰好达标
+touch "$FIXTURES/marker_kubelet_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.2"
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" 2>&1) || {
+  echo "scenario12 failed:" >&2; echo "$out" >&2; exit 1
 }
-grep -Fq 'node-1: 大页已达标（1312855 页 ≥ 1024000），跳过' <<<"$out"
-grep -Fq '警告: node-1 大页超额预留 —— 物理 1312855 页 > 目标 1024000 页（多 288855 页 ≈ 564Gi），每 NUMA node0=330511 node1=277977 node2=373577 node3=330790' <<<"$out"
-grep -Fq '警告: node-1 超额部分为已预留但闲置的大页，内核无法运行时缩回（需重启节点回收）' <<<"$out"
-grep -Fq '警告: node-1 allocatable 2000Gi < 物理大页 2564Gi —— kubelet 采集滞后，重启 kubelet 可对齐' <<<"$out"
+grep -Fq 'node-1: 已回收超额空闲大页 186583 页 ≈ 364Gi（持久池目标 1024000 页）' <<<"$out"
+grep -Fq 'node-1: 持久池 1024000 页' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
-grep -Fq 'EMS_HUGEPAGES_OVERPROVISIONED=node-1' <<<"$out"
-grep -Fq 'EMS_HUGEPAGES_RENEWED=' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_POOL_PAGES=1024000' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_RECLAIMED=186583' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_SURPLUS=' <<<"$out"
+grep -Fq 'reclaim: converged' "$FIXTURES/ssh.log"
+
+# ==== 场景⑭：回收首轮差零头（1,024,006）→ 有界重试第 2 轮收敛 ==================
+reset_state
+echo 1242346 >"$FIXTURES/hp_10.0.0.1"
+echo 339548 >"$FIXTURES/hp_numa_0_10.0.0.1"; echo 179134 >"$FIXTURES/hp_numa_free_0_10.0.0.1"
+echo 359035 >"$FIXTURES/hp_numa_1_10.0.0.1"; echo 200000 >"$FIXTURES/hp_numa_free_1_10.0.0.1"
+echo 299331 >"$FIXTURES/hp_numa_2_10.0.0.1"; echo 100000 >"$FIXTURES/hp_numa_free_2_10.0.0.1"
+echo 244432 >"$FIXTURES/hp_numa_3_10.0.0.1"; echo 000000 >"$FIXTURES/hp_numa_free_3_10.0.0.1"
+echo 1024000 >"$FIXTURES/hp_10.0.0.2"
+touch "$FIXTURES/reclaim_partial_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.2"
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" 2>&1) || {
+  echo "scenario14 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'node-1: 持久池 1242346 页 > 目标 1024000 页，第 1/3 次回收空闲页' <<<"$out"
+grep -Fq 'node-1 回收后持久池 1024006 页 ≠ 目标 1024000 页' <<<"$out"
+grep -Fq '第 2/3 次回收空闲页' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
+grep -Fq 'node-1: 持久池 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
+
+# ==== 场景⑬：起跑前 surplus > 0（Total 含他人超额页）→ 拒绝开工 ================
+reset_state
+echo 0 >"$FIXTURES/hp_10.0.0.1"; echo 213880 >"$FIXTURES/surp_10.0.0.1"   # 现场：Total 比 Σnr 多 213880
+echo 1024000 >"$FIXTURES/hp_10.0.0.2"
+touch "$FIXTURES/marker_kubelet_10.0.0.2"
+rc=0; out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" 2>&1) || rc=$?
+(( rc == 1 )) || { echo "scenario13 应失败（surplus 未清），实际 rc=$rc" >&2; echo "$out" >&2; exit 1; }
+grep -Fq 'node-1: 检测到 surplus 213880 页（非本 step 预留），等待其释放后再开始' <<<"$out"
+grep -Fq 'node-1 存在 surplus 213880 页' <<<"$out"
+grep -Fq '请先确认该节点上其它大页使用方' <<<"$out"
 
 # ==== 场景①：物理恰好达标（无超额）→ 无超额告警、契约字段为空 ==================
 reset_state
@@ -449,4 +531,4 @@ out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
 ! grep -Fq '超额预留' <<<"$out" || { echo "scenario11b unexpected overprov warning" >&2; exit 1; }
 grep -Fq 'EMS_HUGEPAGES_OVERPROVISIONED=' <<<"$out"
 
- echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance, overprovision guard)'
+ echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance, overpool fail/reclaim/surplus-guard)'

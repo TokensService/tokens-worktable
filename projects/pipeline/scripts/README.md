@@ -377,9 +377,22 @@ unreachable）。节点凭据三级解析：凭据表按内网 IP / ip:port 命�
 （按内网身份反查 endpoint 的 user/pass，连接走内网 22——映射里的 port 是外网
 NAT 端口）；先密钥认证（节点间通常 root 免密），失败且凭据带密码则走密码认证
 （执行宿主有 sshpass 用 sshpass，没有则用 SSH_ASKPASS 喂密码——GPU 节点普遍
-未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
-`EMS_HUGEPAGES_OK/RENEWED/KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检
-失败/终验不达标。单测：`test/test_ems_hugepages.sh`。
+未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。
+
+**池账目口径（2026-10 批量超额复盘后确定）**：达标判据一律用 **Σ(per-NUMA
+nr_hugepages)**（持久池），**不用 `HugePages_Total`**——后者 = 持久池 + surplus，
+surplus 是「别人映射出的超额页」（上一轮实例未清 / 并发操作 / 其他大页负载），
+拿它判到位会把池子顶到目标之上，之后内核还可能把 surplus 并进持久池（实测 2.0T
+目标跑成 2.4~2.5T，单节点白占 400~600Gi）。因此：
+- 起跑前 surplus 必须为 0（等 120s 后仍 >0 直接失败，不在地雷上开工）；
+- 轮询/终验发现持久池 > 目标 → 只回收「每 NUMA 空闲页」把池子收回目标（在用页
+  不动，实测秒级）；surplus > 0 时内核释放会卡死（已知行为）→ 不写、判失败；
+- 收不回去 → **失败**（不再绿灯放行）：内核不能运行时收缩大页，需重启节点回收。
+
+契约输出 `EMS_HUGEPAGES_OK/POOL_PAGES/RENEWED/KUBELET_RESTARTED/RECLAIMED/
+SURPLUS`（`EMS_HUGEPAGES_OVERPROVISIONED` 为兼容保留，成功路径恒为空——真超额
+现在直接失败）。退出码：0 正常；1 环境错误/预检失败/终验不达标/超额收不回。
+单测：`test/test_ems_hugepages.sh`。
 
 ## EMS 安装（ems-deploy.sh）
 
