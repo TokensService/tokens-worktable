@@ -367,9 +367,13 @@ fetch_arch_file() {
   local target="$dest/model_arch.yaml"
   local token="$arch_token"
   local proxy="$arch_proxy"
-  local -a curl_args=(-fsSL --max-time 30 --retry 2 --retry-delay 2)
-  [[ -n "$proxy" ]] && curl_args+=(--proxy "$proxy")
+  # 在线取策略文件：直连优先、失败再走显式代理/环境代理。
+  # 背景：平台执行机的 http(s)_proxy 可能指向已失效的本地代理（如挂掉的 shadowsocks），
+  # 那样每次请求都要卡满超时才回落 —— 实测让一次部署白等 ~100s。
+  local -a curl_args=(-fsSL --connect-timeout 5 --max-time 20 --retry 1 --retry-delay 1)
   [[ -n "$token" ]] && curl_args+=(-H "Authorization: Bearer $token")
+  local -a curl_args_proxy=("${curl_args[@]}")
+  [[ -n "$proxy" ]] && curl_args_proxy+=(--proxy "$proxy")
 
   if [[ -n "$arch_source_dir" ]]; then
     if [[ -f "$arch_source_dir/$arch_dir/model_arch.yaml" ]]; then
@@ -433,7 +437,8 @@ PY
     while IFS= read -r url; do
       [[ -n "$url" ]] || continue
       # 先按原文取（GitHub contents API 靠 Accept: raw 直接返回文件内容）
-      if curl "${curl_args[@]}" -H 'Accept: application/vnd.github.raw' "$url" -o "$target" 2>/dev/null \
+      if { curl "${curl_args[@]}" --noproxy '*' -H 'Accept: application/vnd.github.raw' "$url" -o "$target" 2>/dev/null \
+           || curl "${curl_args_proxy[@]}" -H 'Accept: application/vnd.github.raw' "$url" -o "$target" 2>/dev/null; } \
          && [[ -s "$target" ]] && ! head -c 1 "$target" | grep -q '{'; then
         arch_source="online:${url%%\?*}"
         log "在线获取策略文件成功：$url"
