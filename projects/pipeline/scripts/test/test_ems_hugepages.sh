@@ -160,10 +160,11 @@ case "\$cmd" in
       printf '/sys/devices/system/node/node3/hugepages/hugepages-2048kB %s %s\n' "\$hp_last" "\$(cat "\$FIXTURES/hp_free_\$ip" 2>/dev/null || echo 0)"
     fi ;;
   *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
-  *'nr_hugepages'*)
+  *'/tmp/ems_hp_writer.sh'*|*'nr_hugepages'*)
     # 后台写入器（启动/重启）：置该节点大页为达标；fixture 标记 hp_late 时本次启动
     # 不落盘（模拟存活窗口内未写满即退出，自愈重启后才置达标——压实成果被收割）。
-    # 必须排在 ems_hp_until / rm -f 之前：写入器命令同时含三者特征
+    # 写入器脚本已改为落盘执行（base64），命令里不再有 nr_hugepages 字面量，
+    # 故同时匹配脚本路径。必须排在 ems_hp_until / rm -f 之前。
     if [[ -e "\$FIXTURES/hp_stuck_\$ip" ]]; then echo 'launch: stuck writer' >>"\$FIXTURES/ssh.log"
     elif [[ -e "\$FIXTURES/hp_late_\$ip" ]]; then
       rm -f "\$FIXTURES/hp_late_\$ip"
@@ -505,13 +506,16 @@ Node 1, zone Normal 481571 130553 117982 113645 100806 75330 56136 43984 32047 2
 Node 2, zone Normal 610580 160054 146576 132801 113995 97716 66610 44841 32972 23321 29397
 Node 3, zone Normal 358765 151353 132114 125872 103993 74081 45953 28061 22958 13 2'
 out10=$(hp_quota_recalc "$info_243")
-grep -Fq '/sys/devices/system/node/node0/hugepages/hugepages-2048kB 337004' <<<"$out10"
-grep -Fq '/sys/devices/system/node/node1/hugepages/hugepages-2048kB 323436' <<<"$out10"
+grep -Fq '/sys/devices/system/node/node0/hugepages/hugepages-2048kB 320000' <<<"$out10"
+grep -Fq '/sys/devices/system/node/node1/hugepages/hugepages-2048kB 320000' <<<"$out10"
 grep -Fq '/sys/devices/system/node/node2/hugepages/hugepages-2048kB 317216' <<<"$out10"
-grep -Fq '/sys/devices/system/node/node3/hugepages/hugepages-2048kB 46344' <<<"$out10"
-# 总量守恒
+grep -Fq '/sys/devices/system/node/node3/hugepages/hugepages-2048kB 17' <<<"$out10"
+# 单 NUMA 配额上限 = 均分值 256000 × 1.25 = 320000（防一个 NUMA 吃掉整个缺口：写入器
+# 只增不减，各 NUMA 峰值叠加会把持久池顶过目标）
+awk '{if ($2 > 320000) bad=1} END{exit (bad ? 0 : 1)}' <<<"$out10" && { echo 'scenario10 cap violated' >&2; exit 1; }
+# 配额合计恒 ≤ 目标（残量不再兜底塞给某 NUMA，等压实后下一轮重算）
 sum10=$(awk '{s+=$2} END{print s+0}' <<<"$out10")
-[[ "$sum10" == 1024000 ]] || { echo "scenario10 total mismatch: $sum10" >&2; exit 1; }
+(( sum10 <= 1024000 )) || { echo "scenario10 total overflow: $sum10" >&2; exit 1; }
 # 子场景 b：buddy 富余充足 → 按 room 比例分配（总量守恒且不超各 NUMA 可达额）
 info2='/sys/devices/system/node/node0/hugepages/hugepages-2048kB 256000 100000
 /sys/devices/system/node/node1/hugepages/hugepages-2048kB 256000 100000
@@ -520,8 +524,11 @@ info2='/sys/devices/system/node/node0/hugepages/hugepages-2048kB 256000 100000
 Node 0, zone Normal 1 2 3 4 5 6 7 8 9 52000 4000
 Node 1, zone Normal 1 2 3 4 5 6 7 8 9 5000 147500'
 out10b=$(hp_quota_recalc "$info2")
-grep -Fq '/sys/devices/system/node/node0/hugepages/hugepages-2048kB 152000' <<<"$out10b"
-grep -Fq '/sys/devices/system/node/node1/hugepages/hugepages-2048kB 360000' <<<"$out10b"
+grep -Fq '/sys/devices/system/node/node0/hugepages/hugepages-2048kB 160000' <<<"$out10b"
+grep -Fq '/sys/devices/system/node/node1/hugepages/hugepages-2048kB 320000' <<<"$out10b"
+awk '{if ($2 > 320000) bad=1} END{exit (bad ? 0 : 1)}' <<<"$out10b" && { echo 'scenario10b cap violated' >&2; exit 1; }
+sum10b=$(awk '{s+=$2} END{print s+0}' <<<"$out10b")
+(( sum10b <= 512000 )) || { echo "scenario10b total overflow: $sum10b" >&2; exit 1; }
 # 子场景 c：已无缺口 → 无输出（静默）
 info3='/sys/devices/system/node/node0/hugepages/hugepages-2048kB 256000 256000
 /sys/devices/system/node/node1/hugepages/hugepages-2048kB 256000 256000
