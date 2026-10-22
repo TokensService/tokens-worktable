@@ -398,7 +398,7 @@ SURPLUS`（`EMS_HUGEPAGES_OVERPROVISIONED` 为兼容保留，成功路径恒为�
 
 `ems-deploy.sh` 是 EMS 部署执行 **step 主脚本**（参数 `EMS_NAME` 必填——显式
 填写或经前置 ems-check 门禁契约继承；`EMS_RELEASE_NAMESPACES` 可选，授权后
-S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥2）校验 + 盲装防线（同名
+S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥1，单机可装）校验 + 盲装防线（同名
 ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删除授权 ns，
 默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
 （release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
