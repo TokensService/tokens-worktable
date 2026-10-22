@@ -489,6 +489,13 @@ indocker_proxy_env_args() {
 build_args=()
 nerdctl_build_args=()
 docker_build_args=()
+# vLLM CUDA 13 Dockerfile 默认限制 wheel 不超过 500 MB。该检查面向发布
+# Python wheel 的 CI；此脚本构建容器镜像，默认跳过检查。显式 BUILD_ARGS
+# 中的 RUN_WHEEL_CHECK 值优先，仍可按需开启。
+if ! printf '%s\n' "$BUILD_ARGS" | grep -q '^RUN_WHEEL_CHECK='; then
+  [[ -z "$BUILD_ARGS" ]] || BUILD_ARGS+=$'\n'
+  BUILD_ARGS+='RUN_WHEEL_CHECK=false'
+fi
 if [[ -n "$BUILD_ARGS" ]]; then
   while IFS= read -r build_arg; do
     [[ -z "$build_arg" ]] && continue
