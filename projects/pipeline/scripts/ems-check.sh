@@ -675,8 +675,18 @@ if GATE_NAME:
     print(f'    [ok] 目标节点：{"、".join(gate_nodes)}（label {label_key}，共 {len(gate_nodes)} 台）')
     occupied = [name for name in label_to_nodes.get(label_key, []) if name not in gate_nodes]
     if occupied:
-        fail(f'label {label_key}=true 已被其他节点占用：{"、".join(occupied)}（换名或人工协调，勿动他人 label）')
-    print(f'    [ok] label {label_key}=true 无外部占用')
+        # 区分「活实例占用」（实例名冲突，必须显式失败）与「空壳 label」（只剩 label，
+        # 无 pod 无 release）——后者由 ems-deploy 自动摘除，否则 nodeSelector 会把新实例
+        # 的 pod 吸到这些非目标节点上去。
+        ns_pat = re.compile(r'^' + re.escape(label_key) + r'($|-[0-9]+$)')
+        live_ns = sorted(ns for ns, inst in instances.items() if ns_pat.match(ns) and inst['pods'])
+        if (GATE_NAME in release_by_name) or live_ns:
+            detail = f'（对应实例仍存活：{"、".join(live_ns) or GATE_NAME}）' if live_ns or GATE_NAME in release_by_name else ''
+            fail(f'label {label_key}=true 已被其他节点占用：{"、".join(occupied)}{detail}——实例名冲突不自动处理，请换名或先人工卸载后重跑')
+        print(f'    [清理] label {label_key}=true 残留在非目标节点：{"、".join(occupied)}'
+              '（无 pod 无 release，空壳）→ 由 ems-deploy 自动摘除，避免新实例 pod 漂到非目标节点')
+    else:
+        print(f'    [ok] label {label_key}=true 无外部占用')
     ns_exists = GATE_NAME in namespaces
     gate_release = release_by_name.get(GATE_NAME)
     idempotent = 0

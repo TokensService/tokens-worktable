@@ -121,6 +121,7 @@ case "\$*" in
   *'delete ns busy-ns'*) touch "\$FIXTURES/marker_deleted"; cp "\$FIXTURES/pods_clean.json" "\$FIXTURES/pods_all.json" ;;
   *'delete ns '*) exit 0 ;;
   *'label node '*'ems13=true'*) touch "\$FIXTURES/marker_labeled" ;;
+  *'label node '*'ems13-'*) echo "label-removed: \$*" >>"\$FIXTURES/kubectl.log" ;;   # 空壳 label 清理
   *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -306,6 +307,7 @@ case "\$*" in
     if [[ -e "\$FIXTURES/marker_installed" ]]; then cat "\$FIXTURES/ems_pods.json"
     else echo '{"items": []}'; fi ;;
   *'label node '*'ems13=true'*) touch "\$FIXTURES/marker_labeled" ;;
+  *'label node '*'ems13-'*) echo "label-removed: \$*" >>"\$FIXTURES/kubectl.log" ;;   # 空壳 label 清理
   *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -379,4 +381,50 @@ grep -Fq 'EMS_NODES=10.0.0.1' <<<"$out"
 ! grep -Fq 'EMS_NODES=10.0.0.1,' <<<"$out"          # 契约只含 1 个节点
 grep -Fq 'EMS_STATUS=installed' <<<"$out"
 
-echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint, single-node install)'
+# ==== 场景⑦：空壳 label（非目标节点只剩 ems13=true，无 pod 无 release）→ 自动摘 ====
+reset_state
+cp "$FIXTURES/nodes.json" "$tmp/nodes_backup.json"
+add_label_node() { # 往 nodes.json 追加一台带 ems13=true 的非目标节点 node-5
+  cp "$tmp/nodes_backup.json" "$FIXTURES/nodes.json"
+  python3 - "$FIXTURES/nodes.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding='utf-8'))
+doc['items'].append({"metadata": {"name": "node-5", "labels": {"ems13": "true"}},
+                     "status": {"addresses": [{"type": "Hostname", "address": "node-5"},
+                                              {"type": "InternalIP", "address": "10.0.0.5"}],
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "capacity": {"hugepages-2Mi": "2000Gi"},
+                                "allocatable": {"hugepages-2Mi": "0"}}})
+json.dump(doc, open(path, 'w'))
+PY
+}
+add_label_node
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario7 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq '空壳 label 清理：node-5 ems13-（该节点无本实例 pod、无 release，防 pod 漂到非目标节点）' <<<"$out"
+grep -Fq 'label-removed: label node node-5 ems13-' "$FIXTURES/kubectl.log"
+grep -Fq 'EMS_STALE_LABELS_REMOVED=node-5' <<<"$out"
+! grep -Fq 'label-removed: label node node-1 ems13-' "$FIXTURES/kubectl.log"   # 目标节点不动
+
+# ==== 场景⑦b：同一节点上仍有「本实例名系」ns 的 pod（活实例）→ 不摘 label ========
+reset_state
+add_label_node
+python3 - "$FIXTURES/pods_all.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding='utf-8'))
+doc['items'].append({"metadata": {"name": "old-worker-0", "namespace": "ems13-99"},
+                     "spec": {"nodeName": "node-5", "containers": [{"name": "c"}]},
+                     "status": {"phase": "Running"}})
+json.dump(doc, open(path, 'w'))
+PY
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario7b failed:" >&2; echo "$out" >&2; exit 1
+}
+! grep -Fq 'label-removed: label node node-5' "$FIXTURES/kubectl.log"   # 有活实例 pod → 保留 label（冲突由门禁显式失败）
+grep -Fq 'EMS_STALE_LABELS_REMOVED=' <<<"$out"
+cp "$tmp/nodes_backup.json" "$FIXTURES/nodes.json"
+
+echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint, single-node install, stale-label cleanup)'

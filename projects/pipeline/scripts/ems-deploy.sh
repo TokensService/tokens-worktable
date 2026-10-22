@@ -65,6 +65,9 @@ RESURRECT_CHECK_SECONDS=10
 VERIFY_TIMEOUT_SECONDS=900
 VERIFY_POLL_SECONDS=10
 
+# cleanup_stale_ems_labels 的结果出口（小写全局；进契约 EMS_STALE_LABELS_REMOVED）
+stale_labels_removed=''
+
 die() { echo "[$SCRIPT_NAME] ERROR: $*" >&2; exit 1; }
 log() { echo "[$SCRIPT_NAME] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -197,6 +200,66 @@ print(json.dumps(entries))')" || id_map='[]'
 }
 
 # ==================== 远程阶段（首个有 kubectl+helm 的目标节点） ====================
+
+# 空壳 label 清理：实例名派生的 ems<N>=true 若残留在**非目标节点**（该节点上没有
+# 「本实例名系」ns 的 pod，即只剩 label 的皮），会通过 nodeSelector 把新实例的 pod
+# 吸到旧节点上去（非目标机被吃掉大页/内存）。这里只摘这种空壳；有 pod 的一律不动
+# （那是活实例，属实例名冲突，由前置检查/门禁显式失败）。
+cleanup_stale_ems_labels() { # <label_key> <目标节点名...>
+    local key=$1
+    shift
+    local nodes_file pods_file stale node
+    nodes_file="$(mktemp)"
+    pods_file="$(mktemp)"
+    if ! kubectl get nodes -o json >"$nodes_file" 2>/dev/null \
+        || ! kubectl get pods -A -o json >"$pods_file" 2>/dev/null; then
+        rm -f "$nodes_file" "$pods_file"
+        return 0
+    fi
+    stale="$(python3 - "$nodes_file" "$pods_file" "$key" "$@" <<'PYQ'
+import json, re, sys
+
+nodes_file, pods_file, key = sys.argv[1], sys.argv[2], sys.argv[3]
+targets = set(sys.argv[4:])
+ns_pat = re.compile(r'^' + re.escape(key) + r'($|-[0-9]+$)')
+live_nodes = set()
+for pod in json.load(open(pods_file, encoding='utf-8')).get('items', []):
+    namespace = (pod.get('metadata') or {}).get('namespace') or ''
+    node_name = (pod.get('spec') or {}).get('nodeName') or ''
+    if node_name and ns_pat.match(namespace):
+        live_nodes.add(node_name)
+stale_nodes = []
+for node in json.load(open(nodes_file, encoding='utf-8')).get('items', []):
+    meta = node.get('metadata') or {}
+    name = meta.get('name')
+    if not name or name in targets:
+        continue
+    if key not in (meta.get('labels') or {}):
+        continue
+    if name in live_nodes:
+        continue
+    stale_nodes.append(name)
+print(','.join(stale_nodes))
+PYQ
+)" || stale=''
+    rm -f "$nodes_file" "$pods_file"
+    stale="$(printf '%s' "$stale" | tr -d '\r')"
+    [[ -n "$stale" ]] || return 0
+    local old_ifs="$IFS"
+    IFS=','
+    for node in $stale; do
+        [[ -n "$node" ]] || continue
+        if kubectl label node "$node" "$key-" >/dev/null 2>&1; then
+            log "空壳 label 清理：$node $key-（该节点无本实例 pod、无 release，防 pod 漂到非目标节点）"
+            stale_labels_removed+="${stale_labels_removed:+,}$node"
+        else
+            log "警告：$node 空壳 label $key 清理失败（不阻塞主流程，人工 kubectl label node $node $key- 可补）"
+        fi
+    done
+    IFS="$old_ifs"
+    return 0
+}
+
 
 install_main() {
     local label_ns label_key chart_dir chart_version
@@ -357,6 +420,7 @@ print("\n".join(found[:5]))
         fi
 
         # ---- S2 安装 ----
+        cleanup_stale_ems_labels "$label_key" "${target_nodes[@]}"
         log "=== [3/3] 打 label + helm install ==="
         local lbl_node
         for lbl_node in "${target_nodes[@]}"; do
@@ -456,6 +520,7 @@ for rel in json.load(sys.stdin):
         break
 ' "$EMS_NAME" "$chart_name")"
     printf 'EMS_POD_HEALTH=%s\n' "$pod_summary"
+    printf 'EMS_STALE_LABELS_REMOVED=%s\n' "${stale_labels_removed:-}"
     printf 'EMS_STATUS=installed\n'
 }
 

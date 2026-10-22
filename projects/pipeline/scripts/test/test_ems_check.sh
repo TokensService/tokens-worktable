@@ -5,7 +5,8 @@ set -euo pipefail
 #   ① 实例清单与版本标注（chart/app/镜像）；② 每节点大页已分配只统计真实请求；
 #   ③ 空壳/遗留识别；④ 客户端 pod；⑤ 目标节点定位（TARGET_IPS 多目标/单 TARGET_IP/
 #   未注入回退本机）；⑥ KEY=VALUE 契约；⑦ 参数面（EMS_NAME/EMS_RELEASE_NAMESPACES）；
-#   ⑧ 安装前门禁（新鲜通过/label 占用/节点占用+预授权/幂等判定/版本不一致/名字非法）。
+#   ⑧ 安装前门禁（新鲜通过/label 占用（活实例）/空壳 label 放行/节点占用+预授权/幂等判定/
+#      版本不一致/名字非法）。
 # 全程只读，不访问真实集群。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -50,6 +51,10 @@ cat >"$tmp/nodes.json" <<'JSON'
               "allocatable": {"cpu": "256", "memory": "3022834496Ki", "hugepages-2Mi": "2000Gi"}}},
   {"metadata": {"name": "node-5", "labels": {}},
    "status": {"addresses": [{"type": "Hostname", "address": "node-5"}, {"type": "InternalIP", "address": "10.0.0.5"}],
+              "capacity": {"hugepages-2Mi": "2000Gi"},
+              "allocatable": {"cpu": "256", "memory": "3022834496Ki", "hugepages-2Mi": "2000Gi"}}},
+  {"metadata": {"name": "node-6", "labels": {"ems77": "true"}},
+   "status": {"addresses": [{"type": "Hostname", "address": "node-6"}, {"type": "InternalIP", "address": "10.0.0.6"}],
               "capacity": {"hugepages-2Mi": "2000Gi"},
               "allocatable": {"cpu": "256", "memory": "3022834496Ki", "hugepages-2Mi": "2000Gi"}}}
 ]}
@@ -233,6 +238,14 @@ TARGET_IPS='["10.0.0.4","10.0.0.5"]' EMS_NAME=ems8-8 bash "$script" >/dev/null 2
 [[ "$rc" == 1 ]] || { echo "gate label-conflict expected exit 1, got $rc" >&2; exit 1; }
 grep -Fq 'label ems8=true 已被其他节点占用' "$tmp/errg1"
 grep -Fq 'node-1' "$tmp/errg1"
+
+# ⑧b2 空壳 label（node-6 只剩 ems77=true，无 pod 无 release）→ 门禁放行并提示 deploy 摘除
+outg3=$(TARGET_IPS='["10.0.0.4"]' EMS_NAME=ems77-77 bash "$script") || {
+  echo "gate stale-label failed:" >&2; echo "$outg3" >&2; exit 1
+}
+grep -Fq '[清理] label ems77=true 残留在非目标节点：node-6（无 pod 无 release，空壳）→ 由 ems-deploy 自动摘除' <<<"$outg3"
+grep -Fq '门禁通过' <<<"$outg3"
+grep -Fq 'EMS_GATE=passed' <<<"$outg3"
 
 # ⑧c 业务共存：node-1 上有 ems8-8 业务 pod（无 requests）但 CPU/内存余量充足 → 门禁放行
 outg2=$(TARGET_IPS='["10.0.0.1","10.0.0.4"]' EMS_NAME=ems13-13 EMS_RELEASE_NAMESPACES=busy-ns bash "$script") || {

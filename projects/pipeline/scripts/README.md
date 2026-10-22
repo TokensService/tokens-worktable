@@ -410,7 +410,7 @@ SURPLUS`（`EMS_HUGEPAGES_OVERPROVISIONED` 为兼容保留，成功路径恒为�
 填写或经前置 ems-check 门禁契约继承；`EMS_RELEASE_NAMESPACES` 可选，授权后
 S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥1，单机可装）校验 + 盲装防线（同名
 ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删除授权 ns，
-默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
+默认跳过）；S2 摘空壳 label（见下）+ 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
 （release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
 release 名**）；S3 验证 pod 全 Running&Ready + 每节点大页分配达标（最长 900s）。
 **跨 region（hd2 等）**：TARGET_IPS 为外网入口 endpoint（ip:port）时，分发阶段
@@ -428,6 +428,13 @@ EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证�
 **推荐编排**（三段，平台已验证）：`ems-check`（EMS_NAME=新实例名，门禁）→
 `ems-hugepages`（大页准备，幂等可单独重跑）→ `ems-deploy`（EMS_NAME/
 EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用平台注入）。
+
+**空壳 label 清理（2026-10）**：实例名派生的 `ems<N>=true` 若残留在**非目标节点**
+（该节点上没有 `ems<N>` / `ems<N>-<M>` ns 的 pod，即只剩 label 的皮），会通过
+nodeSelector 把新实例的 pod 吸到旧节点上、白吃非目标机的大页与内存。S2 在打 label
+前自动摘除这类空壳（`kubectl label node <n> ems<N>-`），记入契约
+`EMS_STALE_LABELS_REMOVED=`。判定严格：**该节点上有本实例名系 ns 的 pod 就一律不摘**
+——那是活实例，属实例名冲突，由前置检查与 ems-check 门禁显式失败（不自动处理）。
 
 ## EMS 卸载（ems-uninstall.sh）
 
