@@ -7,7 +7,8 @@ set -euo pipefail
 #      ③ 大页卡死不涨 → 压实/重算/自愈均无果，超时顺延后失败
 #      ④ kubelet 重启后 allocatable 仍不达标 → 失败
 #      ⑤ 单节点目标亦合法（无 ≥2 限制）
-#      ⑥ MemAvailable 不足 → 只读预检秒级失败并输出诊断（不启动写入器）
+#      ⑥ MemAvailable 不足 → 内存自愈阶梯（drop_caches → /dev/shm 孤儿 → 驱逐最大
+#         内存非 EMS pod）；阶梯用尽才失败，且绝不重启节点（⑥a/⑥b/⑥c/⑥d）
 #      ⑦ 重跑续配预检（已锁部分不再占可用内存）
 #      ⑧ 跨 region（hd2/NAT 形态）endpoint 身份映射解析：节点级 SSH 一律走
 #         内网 InternalIP（外网入口在集群内不可路由），外网地址不得作为 ssh 目标
@@ -77,6 +78,15 @@ print(json.dumps({"items": items}))' "\$FIXTURES/nodes.json" "\$FIXTURES/nodes_r
     if [[ -e "\$FIXTURES/marker_kubelet_10.0.0.1" ]]; then cat "\$FIXTURES/node_node-1_ready.json"; else cat "\$FIXTURES/node_node-1.json"; fi ;;
   'get node node-2'*)
     if [[ -e "\$FIXTURES/marker_kubelet_10.0.0.2" ]]; then cat "\$FIXTURES/node_node-2_ready.json"; else cat "\$FIXTURES/node_node-2.json"; fi ;;
+  'get pods -A --field-selector spec.nodeName='*)
+    # 内存自愈③：驱逐候选视图（per-node fixture，未提供则空）
+    pnode=''; for a in "\$@"; do case "\$a" in spec.nodeName=*) pnode="\${a#spec.nodeName=}";; esac; done
+    if [[ -e "\$FIXTURES/pods_\$pnode.json" ]]; then cat "\$FIXTURES/pods_\$pnode.json"; else echo '{"items": []}'; fi ;;
+  *'delete pod '*)          # 实际调用形如 kubectl -n <ns> delete pod <name> ...
+    echo "evicted: \$*" >>"\$FIXTURES/kubectl.log"
+    ev_ip="\$(cat "\$FIXTURES/heal_evict_ip" 2>/dev/null || echo 10.0.0.1)"
+    [[ -e "\$FIXTURES/heal_after_evict" ]] && cp "\$FIXTURES/heal_after_evict" "\$FIXTURES/memavail_\$ev_ip"
+    exit 0 ;;
   *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -107,6 +117,16 @@ case "\$cmd" in
     # 写入器存活检查：fixture 标记「写入器已退出」时才为真
     [[ -e "\$FIXTURES/hp_exit_\$ip" ]] ;;
   *'buddyinfo'*) exit 1 ;;                          # 配额重算采集：默认失败（静默跳过）
+  *'drop_caches'*)
+    # 内存自愈①：丢页缓存。fixture 给「丢完之后的可用值」时同步刷新 memavail
+    echo "drop-caches @\$ip" >>"\$FIXTURES/ssh.log"
+    [[ -e "\$FIXTURES/heal_after_drop_\$ip" ]] && cp "\$FIXTURES/heal_after_drop_\$ip" "\$FIXTURES/memavail_\$ip"
+    exit 0 ;;
+  *'/dev/shm/*'*)
+    # 内存自愈②：/dev/shm 孤儿清理（回字节数；fixture 可给清理后的可用值）
+    echo "shm-gc @\$ip" >>"\$FIXTURES/ssh.log"
+    [[ -e "\$FIXTURES/heal_after_shm_\$ip" ]] && cp "\$FIXTURES/heal_after_shm_\$ip" "\$FIXTURES/memavail_\$ip"
+    cat "\$FIXTURES/shm_bytes_\$ip" 2>/dev/null || echo 0 ;;
   *'HugePages_Surp'*) cat "\$FIXTURES/surp_\$ip" 2>/dev/null || echo 0 ;;   # 远程侧带 awk 取列，mock 只回数字
   *'test -f /tmp/ems_hp_reclaim_done'*) [[ -e "\$FIXTURES/reclaim_done_\$ip" ]] ;;
   *'ems_hp_reclaim_done'*)
@@ -169,7 +189,8 @@ PATH="$tmp/bin:$PATH"
 export PATH
 
 reset_state() {
-  rm -f "$FIXTURES"/marker_* "$FIXTURES"/hp_* "$FIXTURES"/surp_* "$FIXTURES"/reclaim_* "$FIXTURES"/memavail_* "$FIXTURES"/{kubectl,ssh}.log
+  rm -f "$FIXTURES"/marker_* "$FIXTURES"/hp_* "$FIXTURES"/surp_* "$FIXTURES"/reclaim_* "$FIXTURES"/memavail_* \
+        "$FIXTURES"/heal_* "$FIXTURES"/shm_bytes_* "$FIXTURES"/pods_* "$FIXTURES"/{kubectl,ssh}.log
 }
 
 HOSTS='[{"ip":"10.0.0.1","user":"root"},{"ip":"10.0.0.2","user":"root"}]'
@@ -255,17 +276,71 @@ out=$(TARGET_HOSTS='[{"ip":"10.0.0.2","user":"root"}]' TARGET_IPS='["10.0.0.2"]'
 grep -Fq 'node-2: 大页已达标' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
 
-# ==== 场景⑥：MemAvailable 不足 → 预检秒级失败（不启动写入器）===========
+# ==== 场景⑥a：MemAvailable 不足 → drop_caches 后够用（EMS 安装优先，自愈放行）====
 reset_state
-echo 104857600 >"$FIXTURES/memavail_10.0.0.1"   # 100Gi（远低于 2000+200 余量）
+echo 104857600 >"$FIXTURES/memavail_10.0.0.1"              # 100Gi
+echo 2306867200 >"$FIXTURES/heal_after_drop_10.0.0.1"     # 丢页缓存后 2200Gi
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
+  echo "scenario6a failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'node-1: MemAvailable 100Gi < 需求 2200Gi → 进入内存自愈阶梯' <<<"$out"
+grep -Fq 'node-1: 预检自愈完成（drop_caches），MemAvailable 2200Gi ≥ 2200Gi' <<<"$out"
+grep -Fq 'node-1: 预检通过（还需 2000Gi，MemAvailable 2200Gi ≥ 2200Gi）' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_HEALED=node-1=drop_caches' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
+
+# ==== 场景⑥b：drop_caches 不够 → /dev/shm 孤儿清理后够用 =============
+reset_state
+echo 104857600 >"$FIXTURES/memavail_10.0.0.1"              # 100Gi
+echo 157286400 >"$FIXTURES/heal_after_drop_10.0.0.1"      # 丢缓存后仅 150Gi
+echo 214748364800 >"$FIXTURES/shm_bytes_10.0.0.1"         # 孤儿文件 200Gi
+echo 2306867200 >"$FIXTURES/heal_after_shm_10.0.0.1"      # 清理后 2200Gi
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
+  echo "scenario6b failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'node-1: 清理 /dev/shm 孤儿文件 200Gi（无进程持有）' <<<"$out"
+grep -Fq 'node-1: 清理 /dev/shm 后 2200Gi ≥ 2200Gi' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_HEALED=node-1=drop_caches,shm_gc' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
+
+# ==== 场景⑥c：前两档不够 → 驱逐本节点最大内存非 EMS pod 后够用 =====
+reset_state
+echo 104857600 >"$FIXTURES/memavail_10.0.0.1"              # 100Gi
+echo 125829120 >"$FIXTURES/heal_after_drop_10.0.0.1"      # 丢缓存后仅 120Gi
+echo 2306867200 >"$FIXTURES/heal_after_evict"             # 驱逐后 2200Gi
+cat >"$FIXTURES/pods_node-1.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "big-0", "namespace": "bigapp-0"},
+   "spec": {"containers": [{"name": "c", "resources": {"requests": {"memory": "1500Gi"}}}]}},
+  {"metadata": {"name": "ems-server-x", "namespace": "ems13-13"},
+   "spec": {"containers": [{"name": "c", "resources": {"requests": {"memory": "2000Gi"}}}]}},
+  {"metadata": {"name": "ds-0", "namespace": "agent", "ownerReferences": [{"kind": "DaemonSet"}]},
+   "spec": {"containers": [{"name": "c", "resources": {"requests": {"memory": "1800Gi"}}}]}},
+  {"metadata": {"name": "kube-proxy-x", "namespace": "kube-system"},
+   "spec": {"containers": [{"name": "c", "resources": {"requests": {"memory": "1Gi"}}}]}}
+]}
+JSON
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
+  echo "scenario6c failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'node-1: 驱逐占内存最大的非 EMS pod bigapp-0/big-0（requests 1500Gi' <<<"$out"
+grep -Fq 'node-1: 驱逐 bigapp-0/big-0 后 2200Gi ≥ 2200Gi' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_HEALED=node-1=drop_caches,evicted:bigapp-0/big-0' <<<"$out"
+grep -Fq 'evicted: -n bigapp-0 delete pod big-0' "$FIXTURES/kubectl.log"
+! grep -Fq 'ems13-13' "$FIXTURES/kubectl.log"         # EMS 自己的 pod 不动
+! grep -Fq 'ds-0' "$FIXTURES/kubectl.log"             # DaemonSet pod 不碰
+! grep -Fq 'kube-proxy-x' "$FIXTURES/kubectl.log"     # 系统 ns 不碰
+
+# ==== 场景⑥d：阶梯用尽 → 失败（且不重启节点）======================
+reset_state
+echo 104857600 >"$FIXTURES/memavail_10.0.0.1"
 rc=0
 TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" >/dev/null 2>"$tmp/err6" || rc=$?
-[[ "$rc" == 1 ]] || { echo "scenario6 expected exit 1, got $rc" >&2; exit 1; }
-grep -Fq '可用内存不足（还需配 2000Gi，MemAvailable 100Gi < 需求 2200Gi 含 200Gi 余量）' "$tmp/err6"
-grep -Fq '诊断（人工确认后清理' "$tmp/err6"
+[[ "$rc" == 1 ]] || { echo "scenario6d expected exit 1, got $rc" >&2; exit 1; }
+grep -Fq '可用内存不足（还需配 2000Gi，MemAvailable 100Gi < 需求 2200Gi 含 200Gi 余量），先尝试自愈' "$tmp/err6"
 grep -Fq 'python train.py' "$tmp/err6"            # Top 大内存进程已列出
-grep -Fq '/dev/shm' "$tmp/err6"                   # shm 占用已列出
-grep -Fq '孤儿文件可 rm' "$tmp/err6"
+grep -Fq '自愈阶梯用尽' "$tmp/err6"
+grep -Fq '按约定不重启节点' "$tmp/err6"
 ! grep -Fq 'nr_hugepages' "$FIXTURES/ssh.log"     # 未启动写入器
 ! grep -Fq 'kubelet-restarted' "$FIXTURES/ssh.log"
 
@@ -535,4 +610,4 @@ out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
 ! grep -Fq '超额预留' <<<"$out" || { echo "scenario11b unexpected overprov warning" >&2; exit 1; }
 grep -Fq 'EMS_HUGEPAGES_OVERPROVISIONED=' <<<"$out"
 
- echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance, overpool fail/reclaim/surplus-guard)'
+ echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance, overpool fail/reclaim/surplus-guard, mem self-heal ladder)'

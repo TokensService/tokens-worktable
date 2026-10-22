@@ -363,10 +363,11 @@ ssh/scp（解析 TARGET_HOSTS 需 python3，密码认证还需 sshpass）。退�
 
 `ems-hugepages.sh` 是 EMS 安装前置的大页准备 **step 主脚本**（零参数）：目标
 2000Gi/节点（内部常量，1000Gi 规格已废弃）。三段式：①解析目标节点（平台注入
-`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做只读内存
-预检（`MemAvailable` < 剩余需求+200Gi 余量即秒级失败并输出 Top 进程/shm 诊断到
-stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发
-direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
+`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做内存预检
+（`MemAvailable` < 剩余需求+200Gi 余量时**先自愈再判**：见下），再写入
+`/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发 direct compaction，
+840s 兜底）；③刷新 allocatable（按需重启 kubelet；重启未生效先 `reset-failed`
+再重试，最多 3 次）+ 终验
 （大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
 到首个有 kubectl 的目标节点）；**跨 region（hd2 等）**：TARGET_IPS 为外网入口
 endpoint（ip:port）时，分发阶段采集内网身份映射（含该 endpoint 的登录凭据）
@@ -378,6 +379,15 @@ unreachable）。节点凭据三级解析：凭据表按内网 IP / ip:port 命�
 NAT 端口）；先密钥认证（节点间通常 root 免密），失败且凭据带密码则走密码认证
 （执行宿主有 sshpass 用 sshpass，没有则用 SSH_ASKPASS 喂密码——GPU 节点普遍
 未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。
+
+**预检自愈（2026-10）**：选用 EMS 安装即声明对目标节点的**完全使用权**，安装流程
+优先级最高，因此「可用内存不足」不再是终局，按阶梯自行清场后再判：
+① `drop_caches`（丢可回收页缓存）→ ② 清理 `/dev/shm` **无进程持有**的孤儿文件
+（≥1GiB；活跃 shm 段一律不动）→ ③ 驱逐该节点上**占内存最大的非 EMS 业务 pod**
+（按 requests 排序，最多 3 个；系统 ns / EMS 自身 ns / DaemonSet / mirror pod 不动；
+被驱逐 pod 由调度器重建到其他节点）。任一档够用即继续安装，动作记入契约
+`EMS_HUGEPAGES_HEALED=<节点>=<动作列表>`（如 `node-1=drop_caches,evicted:bigapp-0/big-0`）；
+阶梯用尽才失败。**红线：不重启节点、不 drain、不动其他节点与集群级自动部署源。**
 
 **池账目口径（2026-10 批量超额复盘后确定）**：达标判据一律用 **Σ(per-NUMA
 nr_hugepages)**（持久池），**不用 `HugePages_Total`**——后者 = 持久池 + surplus，

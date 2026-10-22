@@ -82,9 +82,13 @@ HUGEPAGE_RECLAIM_TIMEOUT_SECONDS=60  # 超额回收（写小 nr_hugepages）等�
 HUGEPAGE_RECLAIM_ATTEMPTS=3         # 超额收口重试次数（零头/页面稍后才释放都能收敛）
 KUBELET_TIMEOUT_SECONDS=240
 KUBELET_POLL_SECONDS=5
+HUGEPAGE_EVICT_MAX=3               # 内存自愈时最多驱逐几个「占内存最大的非 EMS 业务 pod」
+KUBELET_RESTART_ATTEMPTS=3         # kubelet 重启未生效时的重试次数（含 reset-failed）
 
 # hp_reclaim_excess 的结果出口（小写全局，避免 stdout 混入日志/被平台判成报错行）
 hp_reclaim_pages=0
+# hp_heal_memory 的本次动作清单（进契约 EMS_HUGEPAGES_HEALED；每节点重置）
+hp_heal_actions=''
 
 die() { echo "[$SCRIPT_NAME] ERROR: $*" >&2; exit 1; }
 log() { echo "[$SCRIPT_NAME] $*"; }
@@ -538,6 +542,143 @@ hp_reclaim_to_target() { # <node_ip> <node_name> <target_pages> → 0 已达标/
     (( nr == t_target ))
 }
 
+# ==================== 内存自愈（预检不满足就清场，不是报告不足） ====================
+# 前提：选用 EMS 安装即声明对目标节点的**完全使用权**，安装流程拥有最高优先级；
+# 因此可用内存不够时按阶梯自行清场，只要有一档够用就继续装。
+# 红线（避免波及非目标机）：只动目标节点内核 / tmpfs 与该节点上的 pod；
+# **不重启节点、不 drain、不动其他节点、不动集群级自动部署源**。
+# 阶梯：① drop_caches（可回收页缓存，最无害）→ ② /dev/shm 孤儿文件（无进程持有才删）
+#       → ③ 驱逐本节点占内存最大的非 EMS 业务 pod（最多 HUGEPAGE_EVICT_MAX 个，
+#         被驱逐 pod 由调度器重建到其他节点——已与使用方确认允许）。
+# 本节点发生过的动作记入 hp_heal_actions，最终进契约 EMS_HUGEPAGES_HEALED。
+hp_mem_avail_gib() { # <node_ip> → 可用内存 Gi（取不到则空）
+    # 远端正常只回一个数字（awk 已取列）；兼容整段 /proc/meminfo 形态（取得到多个数字）
+    node_ssh "$1" 'awk "/^MemAvailable/{print \$2}" /proc/meminfo' 2>/dev/null \
+        | awk '{v=$1; if (v=="MemAvailable:") v=$2; if (v ~ /^[0-9]+$/) {print int(v/1024/1024); exit}}'
+}
+
+hp_heal_drop_caches() { # <node_ip>
+    node_ssh "$1" 'sync; echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true' >/dev/null 2>&1
+}
+
+# /dev/shm 孤儿文件清理：**只删无任何进程持有**的 ≥1GiB 文件（既不在 /proc/*/maps，
+# 也不在 /proc/*/fd）；活跃 shm 段一律不动——误删会直接崩掉正在用的业务。
+# stdout：删除的总字节数。
+hp_heal_shm_orphans() { # <node_ip>
+    node_ssh "$1" 'total=0
+for f in /dev/shm/*; do
+    [ -f "$f" ] || continue
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    [ "$sz" -ge 1073741824 ] || continue
+    if grep -qlF -- "$f" /proc/*/maps 2>/dev/null; then continue; fi
+    if ls -l /proc/*/fd 2>/dev/null | grep -qF -- "$f"; then continue; fi
+    rm -f "$f" 2>/dev/null && total=$(( total + sz ))
+done
+echo "$total"' 2>/dev/null
+}
+
+# 目标节点上「占内存最大」的非 EMS 业务 pod（行：<ns>/<name> <requests_Gi>）。
+# 排除：系统 ns、EMS 自身 ns（ems<N>[-<M>]）、DaemonSet / 静态 mirror pod（删了立刻回来）、
+# 正在终止的 pod。无候选时输出为空。
+hp_evict_top_mem_pod() { # <kubectl 节点名>
+    local pods_file out
+    pods_file="$(mktemp)" || return 1
+    if ! kubectl get pods -A --field-selector "spec.nodeName=$1" -o json >"$pods_file" 2>/dev/null; then
+        rm -f "$pods_file"; return 1
+    fi
+    out="$(python3 - "$pods_file" <<'PY'
+import json, re, sys
+
+EMS_NS = re.compile(r'^ems[0-9]+(-[0-9]+)?$')
+SYS_NS = {'kube-system', 'kube-public', 'kube-node-lease'}
+MULT = {'': 1, 'K': 10**3, 'M': 10**6, 'G': 10**9, 'T': 10**12, 'P': 10**15,
+        'Ki': 2**10, 'Mi': 2**20, 'Gi': 2**30, 'Ti': 2**40, 'Pi': 2**50}
+
+
+def qty(value):
+    if not value:
+        return 0
+    match = re.fullmatch(r'([0-9.]+)\s*([KMGTP]i?)?', str(value).strip())
+    if not match:
+        return 0
+    return int(float(match.group(1)) * MULT[match.group(2) or ''])
+
+
+rows = []
+for pod in json.load(open(sys.argv[1], encoding='utf-8')).get('items', []):
+    meta = pod.get('metadata') or {}
+    namespace = meta.get('namespace') or ''
+    if namespace in SYS_NS or EMS_NS.match(namespace):
+        continue
+    if meta.get('deletionTimestamp'):
+        continue
+    if (meta.get('annotations') or {}).get('kubernetes.io/config.mirror'):
+        continue
+    owners = meta.get('ownerReferences') or []
+    if any((owner.get('kind') or '') == 'DaemonSet' for owner in owners):
+        continue
+    requested = 0
+    for container in (pod.get('spec') or {}).get('containers') or []:
+        requested += qty((((container.get('resources') or {}).get('requests') or {})).get('memory'))
+    rows.append((requested, namespace, meta.get('name')))
+if rows:
+    requested, namespace, name = max(rows)
+    print(f'{namespace}/{name} {requested // 2**30}')
+PY
+)" || { rm -f "$pods_file"; return 1; }
+    rm -f "$pods_file"
+    printf '%s\n' "$out"
+}
+
+hp_heal_note() { # <动作>  记录到本次节点的自愈动作清单
+    hp_heal_actions+="${hp_heal_actions:+,}$1"
+}
+
+# 阶梯自愈：达 need_gib 即返回 0；阶梯用尽仍不足返回 1（调用方据此判失败）。
+hp_heal_memory() { # <node_ip> <kubectl节点名> <need_gib>
+    local n_ip=$1 n_kube=$2 n_need=$3 avail freed cand pod round
+    avail="$(hp_mem_avail_gib "$n_ip")"
+    [[ -n "$avail" ]] || return 1
+    (( avail >= n_need )) && return 0
+    log "$n_kube: MemAvailable ${avail}Gi < 需求 ${n_need}Gi → 进入内存自愈阶梯（EMS 安装优先，主动清场）"
+    # ① 丢可回收页缓存
+    hp_heal_drop_caches "$n_ip"
+    hp_heal_note drop_caches
+    avail="$(hp_mem_avail_gib "$n_ip")"
+    if (( avail >= n_need )); then
+        log "$n_kube: drop_caches 后 ${avail}Gi ≥ ${n_need}Gi，继续安装"
+        return 0
+    fi
+    # ② /dev/shm 孤儿文件
+    freed="$(hp_heal_shm_orphans "$n_ip")"
+    if [[ -n "$freed" && "$freed" != 0 ]]; then
+        hp_heal_note shm_gc
+        log "$n_kube: 清理 /dev/shm 孤儿文件 $(( freed / 1024 / 1024 / 1024 ))Gi（无进程持有）"
+        avail="$(hp_mem_avail_gib "$n_ip")"
+        if (( avail >= n_need )); then
+            log "$n_kube: 清理 /dev/shm 后 ${avail}Gi ≥ ${n_need}Gi，继续安装"
+            return 0
+        fi
+    fi
+    # ③ 驱逐占内存最大的非 EMS 业务 pod（逐个删、逐个复查）
+    for (( round = 1; round <= HUGEPAGE_EVICT_MAX; round++ )); do
+        cand="$(hp_evict_top_mem_pod "$n_kube")" || break
+        [[ -n "$cand" ]] || break
+        pod="${cand% *}"
+        log "$n_kube: 驱逐占内存最大的非 EMS pod $pod（requests ${cand#* }Gi，第 ${round}/${HUGEPAGE_EVICT_MAX} 个）"
+        kubectl -n "${pod%%/*}" delete pod "${pod#*/}" --grace-period=30 --wait=false >/dev/null 2>&1 || break
+        hp_heal_note "evicted:${pod}"
+        sleep 15
+        avail="$(hp_mem_avail_gib "$n_ip")"
+        if (( avail >= n_need )); then
+            log "$n_kube: 驱逐 $pod 后 ${avail}Gi ≥ ${n_need}Gi，继续安装"
+            return 0
+        fi
+    done
+    log_err "$n_kube: 内存自愈阶梯用尽（${hp_heal_actions:-无动作}），MemAvailable 仍 ${avail:-?}Gi < 需求 ${n_need}Gi"
+    return 1
+}
+
 hugepages_main() {
     local node_json ip node_name access resolved
     local -a target_nodes=() target_access=()
@@ -647,7 +788,7 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
 
     # ---- [1/3] 配大页（只增不减，已达标跳过）----
     log "=== [1/3] 配置大页（${HUGEPAGE_GIB}Gi/节点，只增不减） ==="
-    local total_pages per_numa renewed_nodes='' reclaimed_pages=0
+    local total_pages per_numa renewed_nodes='' reclaimed_pages=0 healed_nodes=''
     total_pages=$((HUGEPAGE_GIB * 512))
     local hp_idx hp_node node_ip
     for hp_idx in "${!target_nodes[@]}"; do
@@ -682,9 +823,9 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
             log "$hp_node: 大页已达标（$current 页 ≥ $total_pages），跳过"
             continue
         fi
-        # ---- 只读预检：可用内存不足提前失败（秒级）而非干等 900s 超时 ----
-        # 不自动清理：/dev/shm 活跃文件与大内存业务进程需人工确认（红线）；
-        # 诊断输出走 stderr，不进 stdout 的 KEY=VALUE 变量池（防 ps 参数泄入下游）
+        # ---- 预检：可用内存不足则就地自愈（EMS 安装优先级最高，不是报告不足）----
+        # 阶梯：drop_caches → /dev/shm 孤儿 → 驱逐本节点最大内存非 EMS pod；
+        # 诊断走 stderr，不进 stdout 的 KEY=VALUE 变量池（防 ps 参数泄入下游）
         local probe_out avail_kb avail_gib
         probe_out="$(node_ssh "$node_ip" "egrep 'MemTotal|MemAvailable' /proc/meminfo; df -h /dev/shm 2>/dev/null | tail -1")" \
             || die "读取 $hp_node 内存现状失败"
@@ -695,11 +836,18 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
         local remaining_gib=$(( (total_pages - current) / 512 ))   # 512 页(2MiB)/Gi
         local need_gib=$(( remaining_gib + HUGEPAGE_PRECHECK_MARGIN_GIB ))
         if (( avail_gib < need_gib )); then
-            echo "[$SCRIPT_NAME] $hp_node: 可用内存不足（还需配 ${remaining_gib}Gi，MemAvailable ${avail_gib}Gi < 需求 ${need_gib}Gi 含 ${HUGEPAGE_PRECHECK_MARGIN_GIB}Gi 余量），预计分配必卡，预检失败" >&2
-            echo "[$SCRIPT_NAME] $hp_node 诊断（人工确认后清理，再重跑本 step）：" >&2
+            echo "[$SCRIPT_NAME] $hp_node: 可用内存不足（还需配 ${remaining_gib}Gi，MemAvailable ${avail_gib}Gi < 需求 ${need_gib}Gi 含 ${HUGEPAGE_PRECHECK_MARGIN_GIB}Gi 余量），先尝试自愈" >&2
             printf '    %s\n' "$probe_out" >&2
             node_ssh "$node_ip" "ps aux --sort=-rss | head -6" 2>/dev/null | sed 's/^/    /' >&2 || true
-            die "$hp_node 大内存进程需业务方确认、/dev/shm 孤儿文件可 rm、必要时 drop_caches；清理后重跑本 step（幂等）"
+            hp_heal_actions=''
+            if hp_heal_memory "$node_ip" "$hp_node" "$need_gib"; then
+                avail_gib="$(hp_mem_avail_gib "$node_ip")"
+                healed_nodes+="$hp_node=${hp_heal_actions} "
+                log "$hp_node: 预检自愈完成（${hp_heal_actions}），MemAvailable ${avail_gib:-?}Gi ≥ ${need_gib}Gi"
+            else
+                avail_gib="$(hp_mem_avail_gib "$node_ip")"
+                die "$hp_node 可用内存不足且自愈阶梯用尽（动作：${hp_heal_actions:-无}，MemAvailable ${avail_gib}Gi < 需求 ${need_gib}Gi）——已尝试 drop_caches / /dev/shm 孤儿清理 / 驱逐本节点最大内存非 EMS pod；按约定不重启节点，请释放该节点大内存负载后重跑本 step（幂等）"
+            fi
         fi
         log "$hp_node: 预检通过（还需 ${remaining_gib}Gi，MemAvailable ${avail_gib}Gi ≥ ${need_gib}Gi）"
         log "$hp_node: $current 页 → $total_pages 页（per-NUMA 后台写入 + 停滞自愈：主动压实/配额重算/写入器重启）"
@@ -780,18 +928,30 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
         # 重启前后比对 kubelet 的 MainPID + 启动时间戳：不变说明重启命令没落到这台机上
         # （跨 region 误判 / ssh 静默失败等），此时 allocatable 不可能刷新，应立即失败
         # 而不是空转 KUBELET_TIMEOUT_SECONDS 后误报成「cadvisor 采集滞后」。
-        local kube_id_before kube_id_after
+        local kube_id_before kube_id_after kube_try kube_ok=0
         kube_id_before="$(node_ssh "$node_ip2" \
             'systemctl show kubelet -p MainPID -p ExecMainStartTimestamp --value 2>/dev/null | tr "\n" " "' \
             2>/dev/null | tr -d '\r' | tail -1)" || true
-        node_ssh "$node_ip2" 'systemctl restart kubelet' || die "$kube_node 重启 kubelet 失败"
-        sleep 3
-        kube_id_after="$(node_ssh "$node_ip2" \
-            'systemctl show kubelet -p MainPID -p ExecMainStartTimestamp --value 2>/dev/null | tr "\n" " "' \
-            2>/dev/null | tr -d '\r' | tail -1)" || true
-        if [[ -n "$kube_id_before" && "$kube_id_before" == "$kube_id_after" ]]; then
-            die "$kube_node 重启 kubelet 未生效（MainPID/启动时间仍为「$kube_id_after」）——命令没有落到该节点或该节点 kubelet 未被重启，allocatable 不可能刷新；请先确认该节点 SSH/本机判定与 kubelet 状态（参考 step 手册「本机判定误判」坑）再重跑本 step"
-        fi
+        for (( kube_try = 1; kube_try <= KUBELET_RESTART_ATTEMPTS; kube_try++ )); do
+            # 第 1 次直接 restart；后续先 reset-failed（进程反复自退时 systemd 会拒启）再 restart
+            if (( kube_try == 1 )); then
+                node_ssh "$node_ip2" 'systemctl restart kubelet' || die "$kube_node 重启 kubelet 失败"
+            else
+                node_ssh "$node_ip2" 'systemctl reset-failed kubelet 2>/dev/null; systemctl restart kubelet' \
+                    || die "$kube_node 第 ${kube_try} 次重启 kubelet 失败"
+            fi
+            sleep 3
+            kube_id_after="$(node_ssh "$node_ip2" \
+                'systemctl show kubelet -p MainPID -p ExecMainStartTimestamp --value 2>/dev/null | tr "\n" " "' \
+                2>/dev/null | tr -d '\r' | tail -1)" || true
+            if [[ -z "$kube_id_before" || "$kube_id_before" != "$kube_id_after" ]]; then
+                kube_ok=1
+                (( kube_try > 1 )) && healed_nodes+="kubelet_reset_failed:${kube_node} "
+                break
+            fi
+            log_err "$kube_node: 第 ${kube_try}/${KUBELET_RESTART_ATTEMPTS} 次重启 kubelet 未生效（MainPID/启动时间仍为「$kube_id_after」），重试"
+        done
+        (( kube_ok )) || die "$kube_node 连续 ${KUBELET_RESTART_ATTEMPTS} 次重启 kubelet 均未生效（MainPID/启动时间仍为「$kube_id_after」）——命令没有落到该节点或该节点 kubelet 无法启动，allocatable 不可能刷新；请确认该节点 SSH/本机判定与 kubelet 状态（参考 step 手册「本机判定误判」坑）再重跑本 step"
         log "$kube_node: kubelet 已重启（${kube_id_before:-unknown} → ${kube_id_after:-unknown}）"
         restarted_nodes+="$kube_node "
         local waited2=0 ready='' alloc2=0 node_ready_json
@@ -866,6 +1026,7 @@ for node in json.load(sys.stdin).get("items", []):
     printf 'EMS_KUBELET_RESTARTED=%s\n' "$(echo "${restarted_nodes// /,}" | sed 's/,$//')"
     printf 'EMS_HUGEPAGES_RECLAIMED=%s\n' "$reclaimed_pages"
     printf 'EMS_HUGEPAGES_SURPLUS=%s\n' "$(echo "${surplus_nodes// /,}" | sed 's/,$//')"
+    printf 'EMS_HUGEPAGES_HEALED=%s\n' "$(echo "${healed_nodes// /,}" | sed 's/,$//')"
     # 兼容保留：真超额（持久池超目标且收不回去）现在直接 die，成功路径恒为空
     printf 'EMS_HUGEPAGES_OVERPROVISIONED=%s\n' ''
 }
