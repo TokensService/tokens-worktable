@@ -33,6 +33,15 @@ ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
 PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill-64k}"
 PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode-64k}"
 PROFILING_TIMESTAMP="${PROFILING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
+# profiler 采集的 worker step 上限（vLLM --profiler-config.max_iterations）。
+# 默认 3（引擎启动时抓 3 步）；要完整抓长 prefill（如 256K 输入被切成 17 个 chunk）
+# 需调大，例如 32。注意运行时 diagnose set_profiling 只管时长（≤20s），管不了步数上限。
+PROFILING_MAX_ITERATIONS="${PROFILING_MAX_ITERATIONS:-3}"
+[[ "$PROFILING_MAX_ITERATIONS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "PROFILING_MAX_ITERATIONS must be a positive integer, got: $PROFILING_MAX_ITERATIONS" >&2
+  exit 2
+}
+export PROFILING_MAX_ITERATIONS
 NAMESPACE_ARCH="${arch:-}"
 [[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
 EXECUTOR="${EXECUTOR:-}"
@@ -396,7 +405,7 @@ for package in arch.get("deploy_spec_packages", []):
                 "torch_profiler_use_gzip": False,
                 "torch_profiler_dump_cuda_time_total": False,
                 "ignore_frontend": True,
-                "max_iterations": 3,
+                "max_iterations": int(os.environ.get("PROFILING_MAX_ITERATIONS", "3")),
             })
         if replicas_override is not None:
             spec["min"] = spec["max"] = spec["default"] = replicas_override
