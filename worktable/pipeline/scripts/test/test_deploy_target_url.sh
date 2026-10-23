@@ -71,7 +71,7 @@ PATH="$work_dir/bin:$PATH" \
 HEAD_LOG_ROOT="$work_dir/logs" \
 PIPELINE_ENV_FILE="$work_dir/run/pipeline.env" \
 XDS_READY_TIMEOUT_SECONDS=5 \
-bash "$script_dir/deploy-model.sh" >/dev/null
+bash "$script_dir/deploy-model.sh" >"$work_dir/deploy.log"
 
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/architectures' "$work_dir/curl.log"
@@ -99,6 +99,7 @@ fi
 grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$runtime_env"
 grep -Fxq 'export SERVICE_API=http://192.168.31.175:31465/xds/v1' "$runtime_env"
 grep -Fxq 'export MODEL_API=http://192.168.31.175:31465/xds/v1/models/test-arch' "$runtime_env"
+grep -Fq 'http://1.95.87.43:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd0830/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=d03b4a32-c632-42c3-9077-0e1586732576&var-model_name=%2Fhome%2Fservice%2Fworks%2Fmodels_ssd%2FGLM-5.2-NVFP4-W4A4-MG39-BNT3%2Fv1&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s' "$work_dir/deploy.log"
 
 # An explicitly supplied URL may still contain the SSH/NAT endpoint. When a
 # node-IP mapping exists, persist and use the mapped Kubernetes address while
@@ -126,10 +127,11 @@ PATH="$work_dir/bin:$PATH" \
 HEAD_LOG_ROOT="$work_dir/logs-explicit" \
 PIPELINE_ENV_FILE="$explicit_runtime_env" \
 XDS_READY_TIMEOUT_SECONDS=5 \
-bash "$script_dir/deploy-model.sh" >/dev/null
+bash "$script_dir/deploy-model.sh" >"$work_dir/deploy-explicit.log"
 
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
 grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$explicit_runtime_env"
 grep -Fxq 'export XDS_API_HOST=192.168.31.175' "$explicit_runtime_env"
+grep -Fq 'http://115.120.28.19:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=df43d24f-0d62-4c5a-a1ab-f874d47461c7&var-model_name=%2Fhome%2Fservice%2Fworks%2Fmodels_ssd%2FGLM-5.2-NVFP4-W4A4-MG39-BNT3%2Fv1&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s' "$work_dir/deploy-explicit.log"
 
 echo "deploy target-url tests passed"
