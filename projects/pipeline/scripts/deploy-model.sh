@@ -29,7 +29,6 @@ DEPLOY_STRATEGY="${DEPLOY_STRATEGY:-}"
 BY="${BY:-}"
 IMAGE_NAME="${IMAGE_NAME:-}"
 DEPLOY_IMAGE="${DEPLOY_IMAGE:-}"
-EMS_NAMESPACE="${EMS_NAMESPACE:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   namespace_base="${NAMESPACE_ARCH:-}"
@@ -80,6 +79,11 @@ PY
 load_persisted_target_node_ip_map() {
   load_persisted_environment_value "$1" TARGET_NODE_IP_MAP
 }
+
+if [[ -z "${EMS_NAMESPACE:-}" ]]; then
+  EMS_NAMESPACE="$(load_persisted_environment_value "$PIPELINE_ENV_FILE" EMS_NAMESPACE)"
+fi
+[[ -n "${EMS_NAMESPACE:-}" ]] || EMS_NAMESPACE=op-ems
 
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 if [[ -z "$TARGET_NODE_IP_MAP" ]]; then
@@ -759,6 +763,7 @@ print_runtime_environment() {
   printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
   printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
   printf 'NAMESPACE=%s\n' "$NAMESPACE"
+  printf 'EMS_NAMESPACE=%s\n' "$EMS_NAMESPACE"
   printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
   printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
   printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
