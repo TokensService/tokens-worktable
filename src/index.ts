@@ -1574,6 +1574,21 @@ function serverPresetScript(key: string, config: any): any {
   return null
 }
 
+/* 阶段脚本路径解析：内置流水线种子的脚本绑定 path 按设计留空（页面侧 rebindBuiltinScriptPaths
+   在 scripts 列表就绪后按名回填真实路径），分享导入/旧数据也可能只带 name 不带 path。服务端从存储
+   读原始阶段定义执行，path 为空时此前会落入模拟分支静默跳过——「不选本地运行」的 shell 任务直接
+   假成功（[定时执行] 模拟阶段完成）。name 有值即按 scriptsDir 同名文件回填（与设置页预设脚本
+   serverPromCollectScript 的 pathResolve(scriptsDir, name) 同一约定；页面脚本列表只列目录顶层文件，
+   name 即裸文件名）；回填后文件不存在由 runStageScript 非零退出响亮失败，绝不再静默模拟。 */
+function resolveServerStageScript(script: any, scriptsDir: string): any {
+  if (!script || typeof script !== 'object' || Array.isArray(script)) return script
+  const name = typeof script.name === 'string' ? script.name.trim() : ''
+  if (!name) return script
+  const path = typeof script.path === 'string' ? script.path.trim() : ''
+  if (path) return script
+  return { ...script, path: pathResolve(scriptsDir || '', name) }
+}
+
 /* 任务级普罗采集的收集脚本（设置 → 普罗数据服务配置 → 收集脚本）：阶段勾选「收集普罗数据」后在任务终态调用（见 execPlan） */
 function serverPromCollectScript(config: any): any {
   const name = config && config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
@@ -6499,6 +6514,10 @@ export function apply(ctx: Context) {
         const varsOut: Record<string, string> = {}
         let entry: any = null
         let shouldStop = false
+        /* 阶段脚本路径归一：path 留空（内置种子/分享导入/旧数据）时按 name 回填 scriptsDir 同名文件——
+           服务端从存储读原始阶段定义执行，不做这一步会在下方分发落入模拟分支静默跳过（详见
+           resolveServerStageScript 注释）；后续 dispatch / 日志条件一律以归一后的 stageScript 为准 */
+        const stageScript = resolveServerStageScript(s && s.script, scriptsDir)
         if (skipped) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }
         else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
           const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
@@ -6519,11 +6538,11 @@ export function apply(ctx: Context) {
           entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
           if (r.code !== 0 && !r.aborted) shouldStop = true
         }
-        else if (s.script && s.script.path) {
+        else if (stageScript && stageScript.path) {
           let r: any
           try {
             const directLog = folder ? taskLogPath(folder, tag, serverStageSeq(executionStages, index, baseSeq), s.name) : undefined
-            r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
+            r = await runStageScript(stageScript, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
           } catch (error) {
             r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
           }
@@ -6532,9 +6551,9 @@ export function apply(ctx: Context) {
           if (!r.aborted) {
             Object.assign(varsOut, r.vars || parseStageVars(r.stdout))
             Object.assign(localPool, varsOut)
-            applyOutVars(s.script.outVars, localPool, r.json === undefined ? parseStageJson(r.stdout) : r.json, r.fullTextOverflow ? undefined as any : (r.fullText === undefined ? r.stdout : r.fullText), varsOut)
+            applyOutVars(stageScript.outVars, localPool, r.json === undefined ? parseStageJson(r.stdout) : r.json, r.fullTextOverflow ? undefined as any : (r.fullText === undefined ? r.stdout : r.fullText), varsOut)
           }
-          entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: stageLogText(s.script.name, r), logFile: r.logFile || null }
+          entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: stageLogText(stageScript.name, r), logFile: r.logFile || null }
           // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
           if (r.code !== 0 && !r.aborted && (!s.preset || s.presetBlock)) shouldStop = true
         } else if (s.preset) {
@@ -6548,7 +6567,7 @@ export function apply(ctx: Context) {
             else throw error
           }
         }
-        if (!(s.script && s.script.path)) runtime?.replaceLog?.(stageId, entry.text)
+        if (!(stageScript && stageScript.path)) runtime?.replaceLog?.(stageId, entry.text)
         return {
           index,
           stage: s,

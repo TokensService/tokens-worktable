@@ -1227,6 +1227,100 @@ test('服务端执行器把脚本实时输出绑定到对应运行阶段', async
   ])
 })
 
+test('服务端执行器按名回填 path 留空的脚本绑定（内置种子/旧数据不再落模拟跳过）', async t => {
+  /* 回归：内置流水线种子/分享导入的脚本绑定按设计 path 留空（页面 rebindBuiltinScriptPaths 只服务
+     浏览器本地执行），服务端从存储读原始阶段执行时 path 为空曾落入模拟分支——「不选本地运行」的
+     shell 任务直接假成功（[定时执行] 模拟阶段完成），脚本根本没跑。修复后按 name 回填 scriptsDir
+     同名文件再执行；回填目标不存在时由 runStageScript 非零退出响亮失败，不再静默模拟。
+     注：scriptsDir 用绝对路径才触发归档目录分支（execPlan 内含动态 import），故挂 allowDynamicImport
+     并用临时目录当 scriptsDir（归档产物落在 /tmp 下随用例清理）。 */
+  const dir = await mkdtemp(tmpdir() + '/pipeline-rebind-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const scriptsDir = pathResolve(dir, 'scripts')
+  await mkdir(scriptsDir, { recursive: true })
+  const captured = []
+  const cfg = { ...apiExecutionConfig, scriptsDir }
+  const f = loadExecPlan(cfg, {}, undefined, (script, runContext, sd) => {
+    captured.push({ name: script.name, path: script.path, scriptsDir: sd, lang: script.lang })
+    return Promise.resolve({ code: 0, stdout: 'RAN=' + script.name, stderr: '' })
+  }, Date, { allowDynamicImport: true })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    /* path 留空：按名回填 scriptsDir/deploy.sh 后真实执行 */
+    { id: 'bind-empty', name: '空path绑定', kind: 'shell', script: { name: 'deploy.sh', path: '', lang: 'sh', params: [], values: {}, outVars: '' } },
+    /* path 空白字符：视同留空回填 */
+    { id: 'bind-blank', name: '空白path绑定', kind: 'shell', script: { name: 'verify.sh', path: '   ', lang: 'sh', params: [], values: {}, outVars: '' } },
+    /* path 已填：原样保留不回填 */
+    { id: 'bind-full', name: '全path绑定', kind: 'shell', script: { name: 'deploy.sh', path: '/abs/elsewhere.sh', lang: 'sh', params: [], values: {}, outVars: '' } },
+    /* kind=simulate 但带脚本绑定：同样按脚本执行（与页面 startStageAt 的 script 优先口径一致） */
+    { id: 'sim-with-script', name: '模拟带脚本', kind: 'simulate', script: { name: 'check.sh', path: '', lang: 'sh', params: [], values: {}, outVars: '' } },
+  ]
+  await f.execPlan(plan)
+
+  assert.deepEqual(captured, [
+    { name: 'deploy.sh', path: pathResolve(scriptsDir, 'deploy.sh'), scriptsDir, lang: 'sh' },
+    { name: 'verify.sh', path: pathResolve(scriptsDir, 'verify.sh'), scriptsDir, lang: 'sh' },
+    { name: 'deploy.sh', path: '/abs/elsewhere.sh', scriptsDir, lang: 'sh' },
+    { name: 'check.sh', path: pathResolve(scriptsDir, 'check.sh'), scriptsDir, lang: 'sh' },
+  ])
+  const rec = f.history[0]
+  assert.equal(rec.status, 'success')
+  /* 四个阶段全部按脚本执行（stageLogText 测试桩输出 <脚本名>:<code>），无一落入模拟分支 */
+  assert.deepEqual(rec.logs.map(l => l.stage + '=>' + l.status + ':' + l.log), [
+    '空path绑定=>success:deploy.sh:0',
+    '空白path绑定=>success:verify.sh:0',
+    '全path绑定=>success:deploy.sh:0',
+    '模拟带脚本=>success:check.sh:0',
+  ])
+})
+
+test('服务端执行器对完全无脚本绑定的阶段保持模拟语义（兼容留空=模拟）', async t => {
+  /* 对照：script 字段缺失 / name 为空的阶段不带执行意图，仍走既有模拟分支（不属本次修复对象） */
+  const dir = await mkdtemp(tmpdir() + '/pipeline-sim-keep-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const f = loadExecPlan({ ...apiExecutionConfig, scriptsDir: pathResolve(dir, 'scripts') }, {}, undefined, undefined, Date, { allowDynamicImport: true })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'plain-sim', name: '纯模拟', kind: 'simulate', dur: 0.06 },   /* dur<1s 仍被夹到 1s，避免测试慢 */
+    { id: 'shell-no-script', name: 'shell无脚本', kind: 'shell', dur: 0.06 },
+    { id: 'name-empty', name: '名称为空', kind: 'shell', dur: 0.06, script: { name: '', path: '', params: [], values: {} } },
+  ]
+  const t0 = Date.now()
+  await f.execPlan(plan)
+  assert.ok(Date.now() - t0 >= 2900, '三个模拟阶段各约 1s（dur 下限夹取），串行总计应≥3s')
+  assert.equal(f.calls.length, 0, '无脚本绑定阶段不得调用 runStageScript')
+  const rec = f.history[0]
+  assert.equal(rec.status, 'success')
+  assert.deepEqual(rec.logs.map(l => l.stage + '=>' + l.status + ':' + l.log), [
+    '纯模拟=>success:[定时执行] 模拟阶段完成',
+    'shell无脚本=>success:[定时执行] 模拟阶段完成',
+    '名称为空=>success:[定时执行] 模拟阶段完成',
+  ])
+})
+
+test('服务端按名回填的脚本文件不存在时响亮失败（非零退出），不再静默模拟', async t => {
+  /* 真实 runStageScript（spawn bash <回填路径>）：文件不存在 → bash 非零退出 → 阶段 failed。
+     验证修复后「脚本名已绑但文件缺失」从静默假成功变成可见失败。源码切片与上方大日志用例同区间。 */
+  const dir = await mkdtemp(tmpdir() + '/pipeline-rebind-missing-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const start = source.indexOf('  // 参数值 ${VAR} 引用替换（同页面 substRunVars）')
+  const end = source.indexOf('  /* 任务回显文本：', start)
+  assert.ok(start >= 0 && end > start, 'runStageScript 源码切片标记未找到')
+  const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
+  const { spawn } = await import('node:child_process')
+  const ctx = {
+    Buffer, Promise, process: { env: {}, platform: process.platform }, console: { warn() {} },
+    spawn, fsMkdir: mkdir, fsOpen, dirname, pathResolve, setTimeout, clearTimeout,
+  }
+  vm.createContext(ctx); vm.runInContext(code, ctx)
+  const r = await ctx.runStageScript(
+    { name: 'definitely-missing.sh', path: pathResolve(dir, 'definitely-missing.sh'), params: [], values: {}, outVars: '' },
+    { envs: [], repository: {}, pipelineName: 'P', tag: 'tag' }, dir, {}, 0,
+  )
+  assert.notEqual(r.code, 0, '脚本文件不存在必须非零退出')
+  assert.ok(/No such file|cannot open|不存在|not found/i.test(r.stderr), 'stderr 应包含文件不存在的可读信息，实际：' + r.stderr.slice(0, 200))
+})
+
 async function assertParallelServerRun(sourceType) {
   const deferred = new Map()
   const f = loadExecPlan(apiExecutionConfig, {}, undefined, (script, runContext, scriptsDir, varsPool) => new Promise(resolve => {
