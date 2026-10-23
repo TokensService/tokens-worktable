@@ -156,6 +156,13 @@ function startStageAt(rc,i){
   if(s.promCollect) s._promT0=Date.now();   // 任务级普罗采集：记录任务开始时间，进入终态后按「开始→结束」时段采集（见 taskPromFinalize）
   if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(rc,i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
   if(s.kind==='evaltokens'){ runEvaltokensStep(rc,i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
+  /* 脚本路径按名回填（与服务端 resolveServerStageScript 同口径）：内置种子/分享导入/旧数据的脚本绑定
+     path 可能留空——rebindBuiltinScriptPaths 只补内置流水线，自定义阶段 path 留空时这里兜底按名解析，
+     否则 shell/python 阶段会落入本地模拟静默跳过（脚本根本没跑却显示成功）。rc.stages 已是运行副本，可改。 */
+  if(s.script && !s.script.path && s.script.name && typeof scriptByName==='function'){
+    const sc=scriptByName(s.script.name);
+    if(sc) s.script=Object.assign({}, s.script, {path:sc.path, lang:s.script.lang||sc.lang});
+  }
   if(s.script && s.script.path){ runScriptStep(rc,i); return; }
   runStage(rc,i);
 }
