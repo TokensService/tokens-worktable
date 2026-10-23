@@ -369,6 +369,10 @@ export_templates_nerdctl() {
     cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
   fi
 
+  # A prior run may leave the chart directory in place. `cp -a source dest`
+  # nests source under an existing directory, leaving the old root/templates
+  # alongside a new nested xds-cluster chart. Replace the chart root first.
+  rm -rf "$TEMPLATE_DIR/xds-cluster"
   cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
   cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
   cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
@@ -419,6 +423,7 @@ export_templates_ctr() {
     cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
   fi
   mkdir -p "$TEMPLATE_DIR"
+  rm -rf "$TEMPLATE_DIR/xds-cluster"
   cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
   cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
   cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"

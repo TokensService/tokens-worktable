@@ -108,6 +108,14 @@ exec "$@"
 EOF
 chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh" "$fake_bin/ctr" "$fake_bin/sudo" "$fake_bin/sshpass"
 
+# Reproduce the previous bad export: the reused template directory already has
+# an old chart root and an xds-cluster nested beneath it.
+mkdir -p "$work_dir/target-run/template/xds-cluster/templates" \
+  "$work_dir/target-run/template/xds-cluster/xds-cluster"
+printf 'old root chart\n' >"$work_dir/target-run/template/xds-cluster/Chart.yaml"
+printf 'old template\n' >"$work_dir/target-run/template/xds-cluster/templates/old.yaml"
+printf 'nested current chart\n' >"$work_dir/target-run/template/xds-cluster/xds-cluster/Chart.yaml"
+
 AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
@@ -127,6 +135,8 @@ TEMPLATE_VARS_JSON='{"MOCK_HELM_DEPLOY":"true"}' \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
+test ! -e "$work_dir/target-run/rendered/xds-cluster/xds-cluster"
+test ! -e "$work_dir/target-run/rendered/xds-cluster/templates/old.yaml"
 test -f "$work_dir/target-run/rendered/values.rendered.yaml"
 test -f "$work_dir/target-run/rendered/architecture.request.json"
 test -f "$work_dir/target-run/pipeline.env"
