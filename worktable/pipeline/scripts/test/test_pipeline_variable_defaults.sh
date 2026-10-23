@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull_render_config.sh"
+deploy_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deploy-model.sh"
 # The extracted initialization also validates target input; keep this test focused on defaults.
 export TARGET_IP="192.168.0.128"
 
@@ -11,16 +12,18 @@ for variable in PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE NAMESPACE RELEASE_
   grep -Fq "${variable}=\"\${${variable}:-}\"" "$script"
 done
 
-if grep -Eq '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' "$script"; then
+grep -Fq 'contains_unexpanded_placeholder' "$script"
+grep -Fq '|| RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"' "$script"
+grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$script"
+grep -Fq 'RUN_DIR="${RUN_DIR:-}"' "$deploy_script"
+grep -Fq '[[ -n "$RUN_DIR" ]] || RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"' "$deploy_script"
+grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$deploy_script"
+
+config="$(sed -n '/^contains_unexpanded_placeholder()/,/^export IMAGE_NAME/{ /^export IMAGE_NAME/q; p; }' "$script")"
+if grep -Eq '="\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' <<<"$config"; then
   echo 'pipeline entrypoint must not use nested parameter defaults' >&2
   exit 1
 fi
-
-grep -Fq 'contains_unexpanded_placeholder' "$script"
-grep -Fq '|| RUN_DIR="/tmp/${PIPELINE_NAME}-$(date +%Y%m%d_%H%M%S)"' "$script"
-grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$script"
-
-config="$(sed -n '/^contains_unexpanded_placeholder()/,/^export IMAGE_NAME/{ /^export IMAGE_NAME/q; p; }' "$script")"
 resolved="$(ARCH_NAME='test-arch' \
   PIPELINE_NAME='${PIPELINE_NAME' \
   RUN_DIR='/tmp/${PIPELINE_NAME' \
@@ -36,6 +39,8 @@ if grep -Fq '${' <<<"$resolved"; then
   exit 1
 fi
 grep -Fq 'PIPELINE_NAME=xds-test-arch' <<<"$resolved"
+grep -Fq 'RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
+grep -Fq 'RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 grep -Fq 'TARGET_RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 

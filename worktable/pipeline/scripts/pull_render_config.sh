@@ -34,7 +34,9 @@ contains_unexpanded_placeholder "$PIPELINE_NAME" && PIPELINE_NAME=""
 [[ -n "$PIPELINE_NAME" ]] || PIPELINE_NAME="xds-${ARCH_NAME}"
 RUN_DIR="${RUN_DIR:-}"
 contains_unexpanded_placeholder "$RUN_DIR" && RUN_DIR=""
-[[ -n "$RUN_DIR" ]] || RUN_DIR="/tmp/${PIPELINE_NAME}-$(date +%Y%m%d_%H%M%S)"
+# Match deploy-model.sh and the remote target so separate pipeline stages use
+# the same execution-host rendered artifacts by default.
+[[ -n "$RUN_DIR" ]] || RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"
 RENDER_DIR="${RENDER_DIR:-}"
 contains_unexpanded_placeholder "$RENDER_DIR" && RENDER_DIR=""
 [[ -n "$RENDER_DIR" ]] || RENDER_DIR="${RUN_DIR}/rendered"

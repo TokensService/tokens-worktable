@@ -99,7 +99,14 @@ cat >"$fake_bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 exec "$@"
 EOF
-chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh" "$fake_bin/ctr" "$fake_bin/sudo"
+cat >"$fake_bin/sshpass" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == "-e" ]]
+shift
+exec "$@"
+EOF
+chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh" "$fake_bin/ctr" "$fake_bin/sudo" "$fake_bin/sshpass"
 
 AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \

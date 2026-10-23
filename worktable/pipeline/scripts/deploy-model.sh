@@ -15,13 +15,19 @@ normalize_kubernetes_name() {
 
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
-RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
+PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
+# Match pull_render_config.sh so separately invoked stages share rendered files.
+RUN_DIR="${RUN_DIR:-}"
+[[ -n "$RUN_DIR" ]] || RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"
 # Pipeline artifacts are retained under ARCHIVE_DIR.  RUN_DIR is a temporary
 # render/deployment workspace and must not be used for execution-host logs.
 ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
-ARCH_NAME="${ARCH_NAME:-default}"
-PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
 EXECUTOR="${EXECUTOR:-}"
 [[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
 NAMESPACE_ARCH="${NAMESPACE_ARCH:-}"
