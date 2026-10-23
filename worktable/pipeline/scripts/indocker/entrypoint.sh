@@ -14,12 +14,21 @@ DOCKERFILE_PATH="${DOCKERFILE_PATH:-$SOURCE_DIR/docker/Dockerfile}"
 BUILD_CONTEXT_PATH="${BUILD_CONTEXT_PATH:-$SOURCE_DIR}"
 DOCKERD_TIMEOUT_SECONDS="${DOCKERD_TIMEOUT_SECONDS:-120}"
 BUILD_CPUS="${BUILD_CPUS:-}"
+INDOCKER_REGISTRY_MIRROR="${INDOCKER_REGISTRY_MIRROR-https://docker.m.daocloud.io}"
+INDOCKER_MAX_CONCURRENT_DOWNLOADS="${INDOCKER_MAX_CONCURRENT_DOWNLOADS:-6}"
 SWR_REGISTRY="${SWR_REGISTRY:?SWR_REGISTRY is required}"
 SWR_CREDENTIALS_FILE="${SWR_CREDENTIALS_FILE:-/output/.swr-credentials}"
 
 mkdir -p /var/lib/docker /var/run
+[[ "$INDOCKER_MAX_CONCURRENT_DOWNLOADS" =~ ^[1-9][0-9]*$ ]] \
+  || die "INDOCKER_MAX_CONCURRENT_DOWNLOADS must be a positive integer"
+dockerd_args=(--host=unix:///var/run/docker.sock --data-root=/var/lib/docker
+  --max-concurrent-downloads="$INDOCKER_MAX_CONCURRENT_DOWNLOADS")
+if [[ -n "$INDOCKER_REGISTRY_MIRROR" ]]; then
+  dockerd_args+=(--registry-mirror="$INDOCKER_REGISTRY_MIRROR")
+fi
 echo '[indocker] starting inner dockerd'
-dockerd --host=unix:///var/run/docker.sock --data-root=/var/lib/docker > /output/dockerd.log 2>&1 &
+dockerd "${dockerd_args[@]}" > /output/dockerd.log 2>&1 &
 dockerd_pid=$!
 trap 'kill "$dockerd_pid" 2>/dev/null || true' EXIT
 

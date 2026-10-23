@@ -21,8 +21,9 @@ usage() {
   BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
   BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认经 192.168.10.6:3128 HTTP 代理转发
-  BUILD_REMOTE_PASSWORD 远程 SSH 密码；默认使用临时机器密码，可由流水线秘密变量覆盖
-  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
+  BUILD_REMOTE_PASSWORD 远程 SSH 密码；默认空，建议通过流水线密钥注入
+  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；未设置时自动转发本机回环代理
+  BUILD_REMOTE_PROXY_FORWARD_PORT SSH 反向代理在远端监听端口，默认 18118
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 1（降低 CUDA 编译峰值内存）
@@ -31,6 +32,8 @@ usage() {
   BUILD_ENGINE        构建器：indocker、auto、docker、buildctl、nerdctl 或 docker-buildx，默认 indocker
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
+  INDOCKER_REGISTRY_MIRROR Docker Hub 镜像加速器 URL，默认 https://docker.m.daocloud.io；显式设为空可关闭
+  INDOCKER_MAX_CONCURRENT_DOWNLOADS indocker 同时下载镜像层数，默认 6
   INDOCKER_RUNNER_CONTEXT indocker runner 构建上下文，默认脚本目录下的 indocker
   INDOCKER_OUTPUT_DIR runner 日志目录，默认 BUILD_OUTPUT_DIR
   INDOCKER_NETWORK    runner 网络，默认 host
@@ -84,10 +87,10 @@ BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-115.120.93.136}"
 BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
 BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
-# Temporary remote machine password for the dev4 rollout. Rotate and remove
-# this fallback after the rollout; a pipeline secret can override it.
-BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-Pass@2026}"
+BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-}"
 BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
+BUILD_REMOTE_PROXY_FORWARD_PORT="${BUILD_REMOTE_PROXY_FORWARD_PORT:-18118}"
+BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT=""
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
 BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
 BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
@@ -99,6 +102,8 @@ BUILD_ARGS="${BUILD_ARGS:-torch_cuda_arch_list=}"
 BUILD_ENGINE="${BUILD_ENGINE:-indocker}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
+INDOCKER_REGISTRY_MIRROR="${INDOCKER_REGISTRY_MIRROR-https://docker.m.daocloud.io}"
+INDOCKER_MAX_CONCURRENT_DOWNLOADS="${INDOCKER_MAX_CONCURRENT_DOWNLOADS:-6}"
 INDOCKER_RUNNER_CONTEXT="${INDOCKER_RUNNER_CONTEXT:-$SCRIPT_DIR/indocker}"
 INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-}"
 INDOCKER_NETWORK="${INDOCKER_NETWORK:-host}"
@@ -122,10 +127,8 @@ if [[ -n "${GIT_BRANCH:-}" || "$IMAGE_TAG_MODE" == branch-time ]]; then
 elif [[ "$IMAGE_TAG_MODE" == explicit ]]; then
   IMAGE_TAG="${IMAGE_TAG:-}"
 fi
-# Temporary SWR credentials for the dev4 image-publish job. Pipeline variables
-# may override these defaults; rotate/remove them after the temporary rollout.
-SWR_USERNAME="${SWR_USERNAME:-cn-southwest-2@HPUAGGFMVQVOGNHA1UJV}"
-SWR_PASSWORD="${SWR_PASSWORD:-6d9883a2f64076619ccd14925ae4415c78d0e05f465c7d0e3b2eb06f34dde296}"
+SWR_USERNAME="${SWR_USERNAME:-}"
+SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-$VLLM_DATA_ROOT/image-build}"
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-$VLLM_DATA_ROOT/cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
@@ -152,6 +155,30 @@ if [[ -z "${HTTP_PROXY:-${http_proxy:-}}" ]] && command -v ss >/dev/null 2>&1 \
   export http_proxy="$HTTP_PROXY"
   export https_proxy="$HTTPS_PROXY"
   info_proxy_detected=true
+fi
+
+# A pipeline runner's loopback proxy is not reachable by the remote builder.
+# Forward it through the SSH session used for the build and use the remote end.
+if [[ -n "$BUILD_REMOTE_HOST" && -z "$BUILD_REMOTE_PROXY_URL" ]]; then
+  local_proxy_url="${BUILD_PROXY_URL:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
+  if [[ "$local_proxy_url" =~ ^(https?)://([^/]+)(/.*)?$ ]]; then
+    local_proxy_scheme="${BASH_REMATCH[1]}"
+    local_proxy_authority="${BASH_REMATCH[2]}"
+    local_proxy_userinfo=""
+    if [[ "$local_proxy_authority" == *@* ]]; then
+      local_proxy_userinfo="${local_proxy_authority%@*}@"
+      local_proxy_authority="${local_proxy_authority##*@}"
+    fi
+    if [[ "$local_proxy_authority" =~ ^(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
+      BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT="${BASH_REMATCH[2]}"
+      BUILD_REMOTE_PROXY_URL="${local_proxy_scheme}://${local_proxy_userinfo}127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}"
+    fi
+  fi
+fi
+if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+  [[ "$BUILD_REMOTE_PROXY_FORWARD_PORT" =~ ^[1-9][0-9]*$ ]] \
+    && ((BUILD_REMOTE_PROXY_FORWARD_PORT <= 65535)) \
+    || { echo "✗ BUILD_REMOTE_PROXY_FORWARD_PORT 必须是 1 到 65535 之间的端口" >&2; exit 2; }
 fi
 
 # apt 的 Release/InRelease 签名不能经过当前本机代理；宿主机可直连这些源时，
@@ -246,8 +273,12 @@ ASKPASS
   else
     ssh_cmd=(ssh -o BatchMode=yes)
   fi
-  ssh_cmd+=(-o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
-    -p "$BUILD_REMOTE_PORT" "$remote_target")
+  ssh_cmd+=(-o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND")
+  if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+    ssh_cmd+=(-o ExitOnForwardFailure=yes
+      -R "127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}:127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT}")
+  fi
+  ssh_cmd+=(-p "$BUILD_REMOTE_PORT" "$remote_target")
 
   "${ssh_cmd[@]}" "mkdir -p -- $remote_control_dir_q" \
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法在远程 /mnt/data 准备控制目录"; }
@@ -277,8 +308,10 @@ ASKPASS
   {
     for env_name in \
       VLLM_REPO_URL VLLM_REF VLLM_DATA_ROOT VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
-      BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_MAX_JOBS BUILD_NVCC_THREADS \
+      BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_REMOTE_PROXY_URL BUILD_REMOTE_PROXY_FORWARD_PORT \
+      BUILD_MAX_JOBS BUILD_NVCC_THREADS \
       BUILD_CPUS BUILD_ARGS BUILD_ENGINE INDOCKER_RUNTIME INDOCKER_RUNNER_IMAGE \
+      INDOCKER_REGISTRY_MIRROR INDOCKER_MAX_CONCURRENT_DOWNLOADS \
       INDOCKER_RUNNER_CONTEXT INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
       BUILDX_AUTO_CREATE BUILDKIT_ADDR CTR_NAMESPACE SWR_REGISTRY SWR_REPOSITORY \
       IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
@@ -290,6 +323,10 @@ ASKPASS
         env_value="${!env_name}"
         if [[ "$env_name" == INDOCKER_RUNNER_CONTEXT && -n "$remote_runner_context" ]]; then
           env_value="$remote_runner_context"
+        fi
+        if [[ "$env_name" == BUILD_PROXY_URL && -n "$BUILD_REMOTE_PROXY_URL" &&
+              "$env_value" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
+          env_value="$BUILD_REMOTE_PROXY_URL"
         fi
         if [[ "$env_name" == HTTP_PROXY || "$env_name" == HTTPS_PROXY ||
               "$env_name" == http_proxy || "$env_name" == https_proxy ]]; then
@@ -307,6 +344,9 @@ ASKPASS
 
   info "远程编译主机: $remote_target"
   info "SSH ProxyCommand: $BUILD_REMOTE_PROXY_COMMAND"
+  if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+    info "SSH 反向代理: 本机 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT} -> 远端 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}"
+  fi
   "${ssh_cmd[@]}" "umask 077 && cat > $remote_script_q && chmod 700 $remote_script_q" <"$0" \
     || { [[ -z "$remote_askpass" ]] || rm -f -- "$remote_askpass"; die "无法传送远程构建脚本"; }
   if [[ -n "$remote_runner_context" ]]; then
@@ -867,6 +907,8 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "SWR_REGISTRY=$SWR_REGISTRY"
         -e "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
+        -e "INDOCKER_REGISTRY_MIRROR=$INDOCKER_REGISTRY_MIRROR"
+        -e "INDOCKER_MAX_CONCURRENT_DOWNLOADS=$INDOCKER_MAX_CONCURRENT_DOWNLOADS"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
         -e "BUILD_CPUS=$BUILD_CPUS"
         -e "BUILD_ARGS_TEXT=$indocker_args_text"
@@ -883,6 +925,8 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "SWR_REGISTRY=$SWR_REGISTRY" -e "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
+        -e "INDOCKER_REGISTRY_MIRROR=$INDOCKER_REGISTRY_MIRROR"
+        -e "INDOCKER_MAX_CONCURRENT_DOWNLOADS=$INDOCKER_MAX_CONCURRENT_DOWNLOADS"
         -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
@@ -897,6 +941,8 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --env "DOCKERFILE_PATH=/output/$(basename "$build_dockerfile")"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         --env "SWR_REGISTRY=$SWR_REGISTRY" --env "SWR_CREDENTIALS_FILE=$indocker_auth_container_path"
+        --env "INDOCKER_REGISTRY_MIRROR=$INDOCKER_REGISTRY_MIRROR"
+        --env "INDOCKER_MAX_CONCURRENT_DOWNLOADS=$INDOCKER_MAX_CONCURRENT_DOWNLOADS"
         --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE" vllm-indocker-runner)
@@ -920,6 +966,10 @@ info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS，nvcc 线程: $BUILD_NVCC_THREADS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
+if [[ "$BUILD_ENGINE" == indocker ]]; then
+  info "镜像层下载并发: $INDOCKER_MAX_CONCURRENT_DOWNLOADS"
+  [[ -z "$INDOCKER_REGISTRY_MIRROR" ]] || info "Docker Hub 镜像源: $INDOCKER_REGISTRY_MIRROR"
+fi
 [[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
 [[ "$flashinfer_wheelhouse_ready" == true ]] && info "flashinfer wheelhouse: $FLASHINFER_WHEELHOUSE_DIR（flashinfer-jit-cache==${flashinfer_version} 本地安装）"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
@@ -939,6 +989,9 @@ else
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
+  if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+    info "[预演] SSH 反向代理: 本机 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT} -> 远端 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}"
+  fi
   exit 0
 fi
 
