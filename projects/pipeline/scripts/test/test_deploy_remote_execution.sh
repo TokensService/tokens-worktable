@@ -105,6 +105,7 @@ fi
 grep -Fq 'Deploy the rendered chart' "$work_dir/ssh.stdin"
 grep -Fq 'test-password' "$work_dir/ssh.stdin"
 grep -Fq 'TARGET_NODE_IP_MAP' "$work_dir/ssh.stdin"
+grep -Fq 'DEPLOY_EXECUTION_PORT=2226' "$work_dir/ssh.stdin"
 for _ in {1..50}; do
   collector_log="$(find "$work_dir/archive-root" -name head-pod.follow.log -print -quit 2>/dev/null || true)"
   [[ -n "$collector_log" ]] && break
@@ -114,6 +115,7 @@ done
 grep -Fxq 'remote head log' "$collector_log"
 grep -Fq 'remote_kubectl_target=root@115.33.98.101' "$(dirname "$collector_log")/metadata"
 grep -Fq 'DEPLOY_EXECUTION_HOST=115.33.98.101' "$work_dir/output"
+grep -Fxq 'DEPLOY_EXECUTION_PORT=2226' "$work_dir/output"
 grep -Fxq 'XDS_URL=http://115.33.98.101:31002/xds/v1/chat/completions' "$work_dir/output"
 grep -Fxq 'XDS_API_HOST=115.33.98.101' "$work_dir/output"
 grep -Fxq 'SERVICE_API=http://115.33.98.101:31002/xds/v1' "$work_dir/output"
@@ -128,6 +130,13 @@ grep -Fxq 'export SERVICE_API=http://115.33.98.101:31002/xds/v1' "$work_dir/loca
 grep -Fxq 'export MODEL_API=http://115.33.98.101:31002/xds/v1/models/glm-5.3-nvfp4' "$work_dir/local.pipeline.env"
 grep -Fxq 'export TARGET_HEAD_LOG_DIR=/remote-run/logs/xds_head_follow_logs_xds-test-arch-local_20260930' "$work_dir/local.pipeline.env"
 grep -Fxq 'export TARGET_HEAD_LOG_COLLECTOR_PID=4242' "$work_dir/local.pipeline.env"
+grep -Fxq 'export DEPLOY_EXECUTION_HOST=115.33.98.101' "$work_dir/local.pipeline.env"
+grep -Fxq 'export DEPLOY_EXECUTION_PORT=2226' "$work_dir/local.pipeline.env"
+resolved_execution_port="$(bash -c 'source "$1"; printf %s "$DEPLOY_EXECUTION_PORT"' bash "$work_dir/local.pipeline.env")"
+[[ "$resolved_execution_port" == 2226 ]] || {
+  echo "pipeline environment did not preserve the deployment execution port: $resolved_execution_port" >&2
+  exit 1
+}
 resolved_head_log_dir="$(bash -c 'source "$1"; printf %s "$HEAD_LOG_DIR"' bash "$work_dir/local.pipeline.env")"
 [[ "$resolved_head_log_dir" == "$work_dir"/archive-root/* ]] || {
   echo "pipeline environment did not preserve the execution-host log archive: $resolved_head_log_dir" >&2
