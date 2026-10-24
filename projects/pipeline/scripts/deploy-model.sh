@@ -35,7 +35,6 @@ DEPLOY_STRATEGY="${DEPLOY_STRATEGY:-}"
 BY="${BY:-}"
 IMAGE_NAME="${IMAGE_NAME:-}"
 DEPLOY_IMAGE="${DEPLOY_IMAGE:-}"
-EMS_NAMESPACE="${EMS_NAMESPACE:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   namespace_base="${NAMESPACE_ARCH:-}"
@@ -89,6 +88,11 @@ load_persisted_target_node_ip_map() {
   load_persisted_environment_value "$1" TARGET_NODE_IP_MAP
 }
 
+if [[ -z "${EMS_NAMESPACE:-}" ]]; then
+  EMS_NAMESPACE="$(load_persisted_environment_value "$PIPELINE_ENV_FILE" EMS_NAMESPACE)"
+fi
+[[ -n "${EMS_NAMESPACE:-}" ]] || EMS_NAMESPACE=op-ems
+
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 if [[ -z "$TARGET_NODE_IP_MAP" ]]; then
   TARGET_NODE_IP_MAP="$(load_persisted_target_node_ip_map "$PIPELINE_ENV_FILE")"
@@ -105,6 +109,7 @@ XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
 XDS_OM="${XDS_OM:-}"
 XDS_API_HOST=""
+XDS_NODE_IP_MAPPED=false
 SERVICE_NAME="${SERVICE_NAME:-ray-svc}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
 MODEL_ENDPOINT="${MODEL_ENDPOINT:-$MODEL_NAME}"
@@ -112,6 +117,10 @@ MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_PATH_INPUT="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 MODEL_CONTAINER_ROOT="${MODEL_CONTAINER_ROOT:-/home/service/works/models_ssd}"
 MODEL_WEIGHT_NAME="${MODEL_WEIGHT_NAME:-}"
+GRAFANA_UNMAPPED_BASE_URL="${GRAFANA_UNMAPPED_BASE_URL:-http://1.95.87.43:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd0830/vllm-bnt3}"
+GRAFANA_MAPPED_BASE_URL="${GRAFANA_MAPPED_BASE_URL:-http://115.120.28.19:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd/vllm-bnt3}"
+GRAFANA_UNMAPPED_PROMETHEUS_UID="${GRAFANA_UNMAPPED_PROMETHEUS_UID:-d03b4a32-c632-42c3-9077-0e1586732576}"
+GRAFANA_MAPPED_PROMETHEUS_UID="${GRAFANA_MAPPED_PROMETHEUS_UID:-df43d24f-0d62-4c5a-a1ab-f874d47461c7}"
 HELM_BIN="${HELM_BIN:-helm}"
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
@@ -639,10 +648,44 @@ PY
   IFS=$'\t' read -r XDS_URL mapped_host <<<"$rewrite_result"
   if [[ -n "$mapped_host" ]]; then
     XDS_API_HOST="$mapped_host"
+    XDS_NODE_IP_MAPPED=true
   fi
   if [[ "$XDS_URL" != "$original_url" ]]; then
     echo "[deploy] rewrote XDS API host using TARGET_NODE_IP_MAP: $XDS_URL"
   fi
+}
+
+print_grafana_url() {
+  local base_url prometheus_uid grafana_url route_label
+  if [[ "$XDS_NODE_IP_MAPPED" == true ]]; then
+    base_url="$GRAFANA_MAPPED_BASE_URL"
+    prometheus_uid="$GRAFANA_MAPPED_PROMETHEUS_UID"
+    route_label="mapped"
+  else
+    base_url="$GRAFANA_UNMAPPED_BASE_URL"
+    prometheus_uid="$GRAFANA_UNMAPPED_PROMETHEUS_UID"
+    route_label="unmapped"
+  fi
+  grafana_url="$(python3 - "$base_url" "$prometheus_uid" "$MODEL_PATH" "$NAMESPACE" <<'PY'
+import sys
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+base_url, prometheus_uid, model_path, namespace = sys.argv[1:]
+parsed = urlsplit(base_url)
+query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+query.update({
+    "orgId": "1",
+    "var-DS_PROMETHEUS": prometheus_uid,
+    "var-model_name": model_path,
+    "var-xds_namespace": namespace,
+    "from": "now-15m",
+    "to": "now",
+    "refresh": "5s",
+})
+print(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)))
+PY
+)"
+echo "[deploy] Grafana Prometheus URL (${route_label}): $grafana_url"
 }
 
 rewrite_xds_url_to_execution_host() {
@@ -735,6 +778,7 @@ print_runtime_environment() {
   printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
   printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
   printf 'NAMESPACE=%s\n' "$NAMESPACE"
+  printf 'EMS_NAMESPACE=%s\n' "$EMS_NAMESPACE"
   printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
   printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
   printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
@@ -1307,6 +1351,7 @@ if [[ "$MOCK_HELM_DEPLOY" == "true" ]]; then
   echo "[mock] Helm deployment, readiness checks, log collection, and model registration skipped"
   echo "[register] model is ACTIVE: $MODEL_NAME (mock)"
   print_runtime_environment
+  print_grafana_url
   exit 0
 fi
 
@@ -1367,3 +1412,4 @@ RUN_DIR="$RUN_DIR" \
   bash "$SCRIPT_DIR/register-model.sh"
 
 print_runtime_environment
+print_grafana_url
