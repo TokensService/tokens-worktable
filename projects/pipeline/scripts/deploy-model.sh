@@ -15,13 +15,19 @@ normalize_kubernetes_name() {
 
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
-RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
+PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
+# Match pull_render_config.sh so separately invoked pipeline stages share the
+# same execution-host rendered artifacts by default.
+RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 # Pipeline artifacts are retained under ARCHIVE_DIR.  RUN_DIR is a temporary
 # render/deployment workspace and must not be used for execution-host logs.
 ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
-ARCH_NAME="${ARCH_NAME:-default}"
-PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
 EXECUTOR="${EXECUTOR:-}"
 [[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
 NAMESPACE_ARCH="${NAMESPACE_ARCH:-}"
@@ -48,6 +54,8 @@ ARCH_REQUEST_FILE="${ARCH_REQUEST_FILE:-${RENDER_DIR}/architecture.request.json}
 RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-${RENDER_DIR}/node-labels.json}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+DEPLOY_EXECUTION_HOST="${DEPLOY_EXECUTION_HOST:-}"
+DEPLOY_EXECUTION_PORT="${DEPLOY_EXECUTION_PORT:-}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
@@ -348,6 +356,8 @@ print(target_ip, target_port, user, password, sep="\t")
 PY
 )"
   IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD <<<"$parsed"
+  DEPLOY_EXECUTION_HOST="$target_ip"
+  DEPLOY_EXECUTION_PORT="$target_port"
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
@@ -371,6 +381,8 @@ PY
     printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
+    printf 'export DEPLOY_EXECUTION_HOST=%q\nexport DEPLOY_EXECUTION_PORT=%q\n' \
+      "$DEPLOY_EXECUTION_HOST" "$DEPLOY_EXECUTION_PORT"
     printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
     printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
     printf 'export ENABLE_PROFILING=%q\n' "$ENABLE_PROFILING"
@@ -415,14 +427,13 @@ PY
   run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
-  local mapped_target_host
+  local mapped_target_host remote_output_filter
   mapped_target_host="$(mapped_execution_target_host)"
+  remote_output_filter='/^(DEPLOY_EXECUTION_HOST|DEPLOY_EXECUTION_PORT)=/d'
   if [[ -n "$mapped_target_host" ]]; then
-    if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
-      [[ ! -e "$remote_env" ]] || unlink "$remote_env"
-      return 1
-    fi
-  elif ! run_remote "$target" "$target_port" "$remote_command"; then
+    remote_output_filter='/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API|DEPLOY_EXECUTION_HOST|DEPLOY_EXECUTION_PORT)=/d'
+  fi
+  if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E "$remote_output_filter"; then
     [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
@@ -448,11 +459,14 @@ PY
   {
     printf 'export TARGET_HEAD_LOG_DIR=%q\n' "$target_head_log_dir"
     printf 'export TARGET_HEAD_LOG_COLLECTOR_PID=%q\n' "$target_head_log_collector_pid"
+    printf 'export DEPLOY_EXECUTION_HOST=%q\nexport DEPLOY_EXECUTION_PORT=%q\n' \
+      "$DEPLOY_EXECUTION_HOST" "$DEPLOY_EXECUTION_PORT"
     printf 'export HEAD_LOG_DIR=%q\n' "$local_head_log_dir"
     printf 'export HEAD_LOG_COLLECTOR_PID=%q\n' "$local_head_log_collector_pid"
   } >>"$PIPELINE_ENV_FILE"
   [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
+  printf 'DEPLOY_EXECUTION_PORT=%s\n' "$target_port"
   ((${#returned_environment[@]} == 0)) || printf '%s\n' "${returned_environment[@]}"
 }
 
@@ -683,6 +697,7 @@ persist_runtime_environment() {
     printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      DEPLOY_EXECUTION_HOST DEPLOY_EXECUTION_PORT \
       XDS_OM \
       MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
       EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
@@ -736,6 +751,8 @@ print_runtime_environment() {
   printf 'NAMESPACE_ARCH=%s\n' "$NAMESPACE_ARCH"
   printf 'DEPLOY_STRATEGY=%s\n' "$DEPLOY_STRATEGY"
   printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
+  [[ -z "$DEPLOY_EXECUTION_HOST" ]] || printf 'DEPLOY_EXECUTION_HOST=%s\n' "$DEPLOY_EXECUTION_HOST"
+  [[ -z "$DEPLOY_EXECUTION_PORT" ]] || printf 'DEPLOY_EXECUTION_PORT=%s\n' "$DEPLOY_EXECUTION_PORT"
 }
 
 wait_for_xds_api() {

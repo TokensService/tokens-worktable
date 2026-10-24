@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull_render_config.sh"
+deploy_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deploy-model.sh"
 # The extracted initialization also validates target input; keep this test focused on defaults.
 export TARGET_IP="192.168.0.128"
 
@@ -12,8 +13,10 @@ for variable in PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE NAMESPACE RELEASE_
 done
 
 grep -Fq 'contains_unexpanded_placeholder' "$script"
-grep -Fq '|| RUN_DIR="/tmp/${PIPELINE_NAME}-$(date +%Y%m%d_%H%M%S)"' "$script"
+grep -Fq '|| RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"' "$script"
 grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$script"
+grep -Fq 'RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"' "$deploy_script"
+grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$deploy_script"
 
 config="$(sed -n '/^contains_unexpanded_placeholder()/,/^export IMAGE_NAME/{ /^export IMAGE_NAME/q; p; }' "$script")"
 # 嵌套默认值禁令只约束初始化块（本测试 sed 抽取并 eval 的区间）；函数体内的
@@ -37,6 +40,8 @@ if grep -Fq '${' <<<"$resolved"; then
   exit 1
 fi
 grep -Fq 'PIPELINE_NAME=xds-test-arch' <<<"$resolved"
+grep -Fq 'RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
+grep -Fq 'RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 grep -Fq 'TARGET_RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 

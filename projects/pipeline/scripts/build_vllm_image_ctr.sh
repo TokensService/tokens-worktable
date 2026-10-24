@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 usage() {
   cat <<'EOF'
@@ -9,27 +10,34 @@ usage() {
 环境变量：
   VLLM_REPO_URL       vLLM 仓库地址，默认 https://github.com/TokensService/vllm.git
   VLLM_REF            分支、标签或提交，默认 main
-  VLLM_SOURCE_DIR     源码目录，默认 /tmp/vllm-build
+  VLLM_SOURCE_DIR     源码目录；远程默认 /mnt/sfs_turbo/vllm-build，本地默认 /tmp/vllm-build
   VLLM_UPDATE         源码目录存在时是否 fetch/checkout，默认 false
   DOCKERFILE          Dockerfile 路径，相对于源码目录，默认 docker/Dockerfile
   BUILD_CONTEXT       构建上下文，相对于源码目录，默认 .
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
-  BUILD_REMOTE_HOST   远程编译主机；设置后通过 SSH 在远端执行本脚本
+  BUILD_REMOTE_HOST   远程编译主机，默认 115.120.93.136；设为空可在当前执行机编译
   BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
   BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认使用 192.168.10.6:3128 HTTP 代理
-  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
+  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；未设置时自动转发本机回环代理
+  BUILD_REMOTE_PROXY_FORWARD_PORT SSH 反向代理在远端监听端口，默认 18118
+  BUILD_REMOTE_PASSWORD   远程 SSH 密码；默认空，建议通过流水线密钥注入
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
+  BUILD_STORAGE_ROOT 构建源码/输出目录根路径，远程默认 /mnt/sfs_turbo，本地默认 /tmp
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
-  BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
-  INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
+  BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx；远程默认 indocker，本地默认 auto
+  INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr；远程默认 docker，本地默认 auto
   INDOCKER_RUNNER_IMAGE Docker-in-Docker runner 镜像，默认 local/vllm-indocker-runner:latest
+  INDOCKER_REGISTRY_MIRROR Docker Hub 镜像加速器 URL，默认 https://docker.m.daocloud.io；显式设为空可关闭
+  INDOCKER_MAX_CONCURRENT_DOWNLOADS indocker 同时下载镜像层数，默认 6
+  INDOCKER_RUNNER_CONTEXT runner Dockerfile/entrypoint 目录，默认脚本旁边的 indocker 目录
   INDOCKER_OUTPUT_DIR runner 输出目录，默认 BUILD_OUTPUT_DIR
+  INDOCKER_PUSH_DIRECT indocker 内直接推送到 SWR，默认 true；设为 false 时导出归档后由宿主机导入推送
   INDOCKER_NETWORK    runner 网络，默认 host
   BUILDX_BUILDER      Docker Buildx builder 名称，默认 vllm-builder
   BUILDX_AUTO_CREATE  docker-buildx 分支是否自动创建/配置 builder，默认 true
@@ -41,14 +49,14 @@ usage() {
   IMAGE_TAG_MODE      branch-time（默认）或 explicit；explicit 才使用 IMAGE_TAG
   SWR_USERNAME        SWR 用户名，非 dry-run 必填
   SWR_PASSWORD        SWR 密码或 Token，非 dry-run 必填
-  BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
+  BUILD_OUTPUT_DIR    构建输出目录；远程默认 /mnt/sfs_turbo/vllm-image-build，本地默认 /tmp/vllm-image-build
   BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
   BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 shared
   UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
   FLASHINFER_PREDOWNLOAD  预下载 flashinfer-jit-cache wheel 并改写 Dockerfile 为本地
                           wheelhouse 安装，默认 true；false 保留构建内远程安装
-  FLASHINFER_WHEELHOUSE_DIR wheelhouse 目录，默认 /tmp/flashinfer-wheelhouse；
+  FLASHINFER_WHEELHOUSE_DIR wheelhouse 目录；远程默认 /mnt/sfs_turbo/flashinfer-wheelhouse，本地默认 /tmp/flashinfer-wheelhouse；
                           已存在同版本完整 wheel 时跳过下载直接复用
   FLASHINFER_WHL_INDEX    预下载使用的 wheel 索引，默认按 Dockerfile 的 CUDA_VERSION
                           推导 https://flashinfer.ai/whl/cu<XX>
@@ -68,19 +76,27 @@ done
 
 VLLM_REPO_URL="${VLLM_REPO_URL:-${GIT_URL:-https://github.com/TokensService/vllm.git}}"
 VLLM_REF="${VLLM_REF:-${GIT_BRANCH:-main}}"
-VLLM_SOURCE_DIR="${VLLM_SOURCE_DIR:-/tmp/vllm-build}"
 VLLM_UPDATE="${VLLM_UPDATE:-false}"
 DOCKERFILE="${DOCKERFILE:-docker/Dockerfile}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
-# 默认在当前执行机编译；设置 BUILD_REMOTE_HOST 后才启用远程 SSH 编译。
-BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST:-}"
+# 默认经 SSH 在 101 上编译；显式设 BUILD_REMOTE_HOST='' 可退回当前执行机。
+BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST-115.120.93.136}"
+if [[ -n "$BUILD_REMOTE_HOST" ]]; then
+  BUILD_STORAGE_ROOT="${BUILD_STORAGE_ROOT:-/mnt/sfs_turbo}"
+else
+  BUILD_STORAGE_ROOT="${BUILD_STORAGE_ROOT:-/tmp}"
+fi
+VLLM_SOURCE_DIR="${VLLM_SOURCE_DIR:-$BUILD_STORAGE_ROOT/vllm-build}"
 BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
 BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
+BUILD_REMOTE_PASSWORD="${BUILD_REMOTE_PASSWORD:-}"
 BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
+BUILD_REMOTE_PROXY_FORWARD_PORT="${BUILD_REMOTE_PROXY_FORWARD_PORT:-18118}"
+BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT=""
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
 BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
 BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
@@ -89,10 +105,27 @@ BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
 BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
 BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
-BUILD_ENGINE="${BUILD_ENGINE:-auto}"
-INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
+if [[ -n "${BUILD_ENGINE:-}" ]]; then
+  BUILD_ENGINE="$BUILD_ENGINE"
+elif [[ -n "$BUILD_REMOTE_HOST" ]]; then
+  BUILD_ENGINE=indocker
+else
+  BUILD_ENGINE=auto
+fi
+if [[ -n "${INDOCKER_RUNTIME:-}" ]]; then
+  INDOCKER_RUNTIME="$INDOCKER_RUNTIME"
+elif [[ -n "$BUILD_REMOTE_HOST" ]]; then
+  INDOCKER_RUNTIME=docker
+else
+  INDOCKER_RUNTIME=auto
+fi
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
+INDOCKER_REGISTRY_MIRROR="${INDOCKER_REGISTRY_MIRROR-https://docker.m.daocloud.io}"
+INDOCKER_MAX_CONCURRENT_DOWNLOADS="${INDOCKER_MAX_CONCURRENT_DOWNLOADS:-6}"
+export INDOCKER_REGISTRY_MIRROR INDOCKER_MAX_CONCURRENT_DOWNLOADS
+INDOCKER_RUNNER_CONTEXT="${INDOCKER_RUNNER_CONTEXT:-}"
 INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-}"
+INDOCKER_PUSH_DIRECT="${INDOCKER_PUSH_DIRECT:-true}"
 INDOCKER_NETWORK="${INDOCKER_NETWORK:-host}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}"
 BUILDX_BUILDER="${BUILDX_BUILDER:-vllm-builder}"
@@ -116,7 +149,15 @@ elif [[ "$IMAGE_TAG_MODE" == explicit ]]; then
 fi
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
-BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
+export SWR_REGISTRY SWR_USERNAME SWR_PASSWORD
+# SSH_ASKPASS helper 只读取环境变量；脚本退出时删除临时 helper。
+BUILD_REMOTE_ASKPASS_HELPER=""
+cleanup_remote_askpass() {
+  [[ -z "$BUILD_REMOTE_ASKPASS_HELPER" ]] || rm -f "$BUILD_REMOTE_ASKPASS_HELPER"
+}
+trap cleanup_remote_askpass EXIT
+# BuildKit/Docker-in-Docker 的数据目录需要本地文件系统；只把源码和输出放到大容量挂载盘。
+BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-$BUILD_STORAGE_ROOT/vllm-image-build}"
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
 # 两个 Docker 构建阶段会并行安装相同的 Python 依赖。共享 uv 缓存可避免
@@ -127,7 +168,7 @@ UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 # 甚至卡死。默认先在执行机预下载到 wheelhouse，构建时经附加构建上下文
 # flashinfer-wheelhouse 注入 COPY --from，改为本地安装（wheel 会进入镜像层）。
 FLASHINFER_PREDOWNLOAD="${FLASHINFER_PREDOWNLOAD:-true}"
-FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-/tmp/flashinfer-wheelhouse}"
+FLASHINFER_WHEELHOUSE_DIR="${FLASHINFER_WHEELHOUSE_DIR:-$BUILD_STORAGE_ROOT/flashinfer-wheelhouse}"
 FLASHINFER_WHL_INDEX="${FLASHINFER_WHL_INDEX:-}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
@@ -139,6 +180,31 @@ if [[ -z "${HTTP_PROXY:-${http_proxy:-}}" ]] && command -v ss >/dev/null 2>&1 \
   export http_proxy="$HTTP_PROXY"
   export https_proxy="$HTTPS_PROXY"
   info_proxy_detected=true
+fi
+
+# A loopback proxy on the pipeline runner is not reachable from the remote
+# builder. Keep the SSH session open as a reverse tunnel, then point all
+# remote Docker/BuildKit/uv requests at the forwarded loopback port.
+if [[ -n "$BUILD_REMOTE_HOST" && -z "$BUILD_REMOTE_PROXY_URL" ]]; then
+  local_proxy_url="${BUILD_PROXY_URL:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
+  if [[ "$local_proxy_url" =~ ^(https?)://([^/]+)(/.*)?$ ]]; then
+    local_proxy_scheme="${BASH_REMATCH[1]}"
+    local_proxy_authority="${BASH_REMATCH[2]}"
+    local_proxy_userinfo=""
+    if [[ "$local_proxy_authority" == *@* ]]; then
+      local_proxy_userinfo="${local_proxy_authority%@*}@"
+      local_proxy_authority="${local_proxy_authority##*@}"
+    fi
+    if [[ "$local_proxy_authority" =~ ^(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
+      BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT="${BASH_REMATCH[2]}"
+      BUILD_REMOTE_PROXY_URL="${local_proxy_scheme}://${local_proxy_userinfo}127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}"
+    fi
+  fi
+fi
+if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+  [[ "$BUILD_REMOTE_PROXY_FORWARD_PORT" =~ ^[1-9][0-9]*$ ]] \
+    && ((BUILD_REMOTE_PROXY_FORWARD_PORT <= 65535)) \
+    || { echo "✗ BUILD_REMOTE_PROXY_FORWARD_PORT 必须是 1 到 65535 之间的端口" >&2; exit 2; }
 fi
 
 # apt 的 Release/InRelease 签名不能经过当前本机代理；宿主机可直连这些源时，
@@ -159,13 +225,36 @@ run_remote_build() {
   [[ -n "$BUILD_REMOTE_HOST" ]] || return 0
   [[ "$BUILD_REMOTE_PORT" =~ ^[1-9][0-9]*$ ]] || die "BUILD_REMOTE_PORT 必须是正整数: $BUILD_REMOTE_PORT"
 
-  local remote_script remote_env remote_target
+  local remote_script remote_env remote_target remote_runner_context
   remote_script="/tmp/build_vllm_image_ctr.$$.sh"
   remote_env="/tmp/build_vllm_image_ctr.$$.env"
+  remote_runner_context="/tmp/vllm-indocker-runner.$$.context"
+  INDOCKER_RUNNER_CONTEXT="$remote_runner_context/indocker"
   remote_target="${BUILD_REMOTE_USER}@${BUILD_REMOTE_HOST}"
-  local -a ssh_cmd=(ssh -o BatchMode=yes
+  local -a ssh_cmd
+  if [[ -n "$BUILD_REMOTE_PASSWORD" ]]; then
+    export BUILD_REMOTE_PASSWORD
+    BUILD_REMOTE_ASKPASS_HELPER="$(mktemp /tmp/build-vllm-ssh-askpass.XXXXXX)"
+    cat >"$BUILD_REMOTE_ASKPASS_HELPER" <<'ASKPASS'
+#!/bin/sh
+printf '%s\n' "$BUILD_REMOTE_PASSWORD"
+ASKPASS
+    chmod 700 "$BUILD_REMOTE_ASKPASS_HELPER"
+    ssh_cmd=(env "SSH_ASKPASS=$BUILD_REMOTE_ASKPASS_HELPER" SSH_ASKPASS_REQUIRE=force DISPLAY=:0
+      ssh -o BatchMode=no -o PubkeyAuthentication=no
+      -o PreferredAuthentications=password,keyboard-interactive
+      -o NumberOfPasswordPrompts=1)
+  else
+    ssh_cmd=(ssh -o BatchMode=yes)
+  fi
+  ssh_cmd+=(-o StrictHostKeyChecking=accept-new
     -o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
-    -p "$BUILD_REMOTE_PORT" "$remote_target")
+    -p "$BUILD_REMOTE_PORT")
+  if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+    ssh_cmd+=(-o ExitOnForwardFailure=yes
+      -R "127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}:127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT}")
+  fi
+  ssh_cmd+=("$remote_target")
 
   local remote_probe remote_cpu remote_mem_mb
   remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc" 2>/dev/null)" \
@@ -191,10 +280,11 @@ run_remote_build() {
   local env_name env_value
   {
     for env_name in \
-      VLLM_REPO_URL VLLM_REF VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
+      VLLM_REPO_URL VLLM_REF BUILD_STORAGE_ROOT VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
       BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_MAX_JOBS BUILD_NVCC_THREADS \
       BUILD_CPUS BUILD_ARGS BUILD_ENGINE INDOCKER_RUNTIME INDOCKER_RUNNER_IMAGE \
-      INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
+      INDOCKER_REGISTRY_MIRROR INDOCKER_MAX_CONCURRENT_DOWNLOADS \
+      INDOCKER_OUTPUT_DIR INDOCKER_PUSH_DIRECT INDOCKER_RUNNER_CONTEXT INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
       BUILDX_AUTO_CREATE BUILDKIT_ADDR CTR_NAMESPACE SWR_REGISTRY SWR_REPOSITORY \
       IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
       BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING HTTP_PROXY HTTPS_PROXY \
@@ -218,18 +308,29 @@ run_remote_build() {
 
   info "远程编译主机: $remote_target"
   info "SSH ProxyCommand: $BUILD_REMOTE_PROXY_COMMAND"
+  "${ssh_cmd[@]}" "mkdir -p '$remote_runner_context'"
+  tar -C "$SCRIPT_DIR" -cf - indocker | "${ssh_cmd[@]}" "tar -xf - -C '$remote_runner_context'"
   "${ssh_cmd[@]}" "mkdir -p /tmp && cat > '$remote_script' && chmod 700 '$remote_script'" <"$0"
-  "${ssh_cmd[@]}" "cat > '$remote_env'" <"$remote_env"
+  "${ssh_cmd[@]}" "umask 077; cat > '$remote_env'" <"$remote_env"
   rm -f "$remote_env"
   set +e
-  "${ssh_cmd[@]}" "set -a; . '$remote_env'; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash '$remote_script'; rc=\$?; rm -f '$remote_script' '$remote_env'; exit \$rc"
+  "${ssh_cmd[@]}" "set -a; . '$remote_env'; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash '$remote_script'; rc=\$?; rm -f '$remote_script' '$remote_env'; rm -rf '$remote_runner_context'; exit \$rc"
   local rc=$?
   set -e
   rm -f "$remote_env"
   return "$rc"
 }
 
-run_remote_build
+if [[ "$BUILD_REMOTE_EXEC" == 0 && -n "$BUILD_REMOTE_HOST" && "$DRY_RUN" != true ]]; then
+  run_remote_build
+  exit $?
+fi
+
+if [[ ( "$BUILD_STORAGE_ROOT" == /mnt/sfs_turbo || "$BUILD_STORAGE_ROOT" == /mnt/sfs_turbo/* ) && "$DRY_RUN" != true ]]; then
+  storage_fstype="$(findmnt -n -T /mnt/sfs_turbo -o FSTYPE 2>/dev/null || true)"
+  [[ "$storage_fstype" == nfs || "$storage_fstype" == nfs4 ]] \
+    || die "/mnt/sfs_turbo 未挂载为 NFS；停止构建以免写入根分区"
+fi
 
 [[ -n "$IMAGE_TAG" ]] || die "必须设置 IMAGE_TAG"
 [[ "$SWR_REGISTRY" != */ ]] || SWR_REGISTRY="${SWR_REGISTRY%/}"
@@ -432,9 +533,11 @@ resolve_indocker_runtime() {
 }
 
 ensure_indocker_runner() {
-  local runner_context="$SCRIPT_DIR/indocker"
+  local runner_context="${INDOCKER_RUNNER_CONTEXT:-$SCRIPT_DIR/indocker}"
   local -a runner_build_args=(--network=host)
   local proxy_name proxy_value
+  [[ -f "$runner_context/Dockerfile" && -f "$runner_context/entrypoint.sh" ]] \
+    || die "indocker runner 构建上下文不完整: $runner_context"
 
   # The runner itself installs apk packages while it is being built.  Pass the
   # same proxy settings used by the inner dockerd; otherwise a localhost proxy
@@ -446,16 +549,12 @@ ensure_indocker_runner() {
   runner_build_args+=(--build-arg "ALPINE_MIRROR=${ALPINE_MIRROR}")
   case "$INDOCKER_RUNTIME" in
     docker)
-      if ! docker image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
-        info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        docker build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
-      fi
+      info "更新 indocker runner: $INDOCKER_RUNNER_IMAGE"
+      docker build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       ;;
     nerdctl)
-      if ! nerdctl -n "$CTR_NAMESPACE" image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
-        info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        nerdctl -n "$CTR_NAMESPACE" build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
-      fi
+      info "更新 indocker runner: $INDOCKER_RUNNER_IMAGE"
+      nerdctl -n "$CTR_NAMESPACE" build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       ;;
     ctr)
       ctr -n "$CTR_NAMESPACE" images ls -q | grep -Fxq "$INDOCKER_RUNNER_IMAGE" || die "ctr 模式找不到 runner 镜像，请先导入 $INDOCKER_RUNNER_IMAGE"
@@ -562,6 +661,8 @@ elif [[ "$BUILD_CACHE" != false ]]; then
 fi
 [[ "$FLASHINFER_PREDOWNLOAD" == true || "$FLASHINFER_PREDOWNLOAD" == false ]] \
   || die "FLASHINFER_PREDOWNLOAD 必须是 true 或 false: $FLASHINFER_PREDOWNLOAD"
+[[ "$INDOCKER_PUSH_DIRECT" == true || "$INDOCKER_PUSH_DIRECT" == false ]] \
+  || die "INDOCKER_PUSH_DIRECT 必须是 true 或 false: $INDOCKER_PUSH_DIRECT"
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
 if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == auto ]]; then
@@ -573,11 +674,19 @@ if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == auto ]]; then
   elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
   fi
 fi
+if [[ "$DRY_RUN" == true && "$BUILD_REMOTE_EXEC" == 0 && -n "$BUILD_REMOTE_HOST" ]]; then
+  info "[预演] 远程编译主机: ${BUILD_REMOTE_USER}@${BUILD_REMOTE_HOST}:${BUILD_REMOTE_PORT}"
+  if [[ -n "$BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT" ]]; then
+    info "[预演] SSH 反向代理: 本机 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_LOCAL_PORT} -> 远端 127.0.0.1:${BUILD_REMOTE_PROXY_FORWARD_PORT}"
+  fi
+fi
 if [[ "$DRY_RUN" != true ]]; then
   [[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
   [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
   command -v git >/dev/null || die "缺少 git"
-  command -v ctr >/dev/null || die "缺少 ctr"
+  if [[ "$BUILD_ENGINE" != indocker || "$INDOCKER_PUSH_DIRECT" != true ]]; then
+    command -v ctr >/dev/null || die "缺少 ctr"
+  fi
     case "$BUILD_ENGINE" in
     auto)
       # 优先使用 Buildx：它支持可持久化的本地 layer cache；只有 Buildx
@@ -604,7 +713,11 @@ if [[ "$DRY_RUN" != true ]]; then
     ensure_buildx_builder
   fi
   if [[ "$BUILD_ENGINE" == indocker ]]; then
+    [[ "$BUILD_CACHE_DIR" != /mnt/sfs_turbo && "$BUILD_CACHE_DIR" != /mnt/sfs_turbo/* ]] \
+      || die "indocker 的 BUILD_CACHE_DIR/dind 需要本地文件系统，不能放在 NFS /mnt/sfs_turbo"
     resolve_indocker_runtime
+    [[ "$INDOCKER_PUSH_DIRECT" != true || "$INDOCKER_RUNTIME" != ctr ]] \
+      || die "indocker 直接推送需要 Docker 或 nerdctl runtime；ctr runtime 请设 INDOCKER_PUSH_DIRECT=false"
     ensure_indocker_runner
   fi
   ensure_source
@@ -675,7 +788,7 @@ if [[ "$flashinfer_wheelhouse_ready" == true && "$DRY_RUN" != true ]]; then
   fi
 fi
 if [[ -z "$INDOCKER_OUTPUT_DIR" ]]; then INDOCKER_OUTPUT_DIR="$BUILD_OUTPUT_DIR"; fi
-mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true
+if [[ "$DRY_RUN" != true ]]; then mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true; fi
 if [[ "$BUILD_ENGINE" == indocker ]]; then
   archive="$INDOCKER_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
 fi
@@ -684,6 +797,9 @@ if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == indocker && "$INDOCKER_RUNTIME" =
   elif command -v nerdctl >/dev/null; then INDOCKER_RUNTIME=nerdctl
   else INDOCKER_RUNTIME=ctr
   fi
+fi
+if [[ "$BUILD_ENGINE" == indocker && "$INDOCKER_PUSH_DIRECT" == true && "$INDOCKER_RUNTIME" == ctr ]]; then
+  die "indocker 直接推送需要 Docker 或 nerdctl runtime；ctr runtime 请设 INDOCKER_PUSH_DIRECT=false"
 fi
 
 # flashinfer wheelhouse 以附加构建上下文注入，供 COPY --from=flashinfer-wheelhouse
@@ -735,6 +851,12 @@ elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
 elif [[ "$BUILD_ENGINE" == indocker ]]; then
   indocker_args_text="$(indocker_build_args_text)"
   read -r -a indocker_proxy_args <<< "$(indocker_proxy_env_args)"
+  indocker_archive_docker_args=()
+  indocker_archive_ctr_args=()
+  if [[ "$INDOCKER_PUSH_DIRECT" != true ]]; then
+    indocker_archive_docker_args=(-e "OUTPUT_ARCHIVE=/output/$(basename "$archive")")
+    indocker_archive_ctr_args=(--env "OUTPUT_ARCHIVE=/output/$(basename "$archive")")
+  fi
   case "$INDOCKER_RUNTIME" in
     docker)
       build_cmd=(docker run --rm --privileged --network "$INDOCKER_NETWORK"
@@ -745,10 +867,12 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "SOURCE_DIR=/workspace/source"
         -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
         -e "BUILD_CPUS=$BUILD_CPUS"
+        -e INDOCKER_REGISTRY_MIRROR -e INDOCKER_MAX_CONCURRENT_DOWNLOADS
         -e "BUILD_ARGS_TEXT=$indocker_args_text"
+        "${indocker_archive_docker_args[@]}"
+        -e INDOCKER_PUSH_DIRECT -e SWR_REGISTRY -e SWR_USERNAME -e SWR_PASSWORD
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
       ;;
@@ -760,8 +884,11 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "IMAGE_REF=$IMAGE" -e "SOURCE_DIR=/workspace/source"
         -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
-        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
+        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS"
+        -e INDOCKER_REGISTRY_MIRROR -e INDOCKER_MAX_CONCURRENT_DOWNLOADS
+        -e "BUILD_ARGS_TEXT=$indocker_args_text"
+        "${indocker_archive_docker_args[@]}"
+        -e INDOCKER_PUSH_DIRECT -e SWR_REGISTRY -e SWR_USERNAME -e SWR_PASSWORD
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
       ;;
@@ -773,8 +900,11 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --env "IMAGE_REF=$IMAGE" --env "SOURCE_DIR=/workspace/source"
         --env "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
-        --env "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
+        --env "INDOCKER_REGISTRY_MIRROR=$INDOCKER_REGISTRY_MIRROR"
+        --env "INDOCKER_MAX_CONCURRENT_DOWNLOADS=$INDOCKER_MAX_CONCURRENT_DOWNLOADS"
+        "${indocker_archive_ctr_args[@]}"
+        --env "INDOCKER_PUSH_DIRECT=$INDOCKER_PUSH_DIRECT"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE" vllm-indocker-runner)
       ;;
@@ -799,6 +929,10 @@ info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS，nvcc 线程: $BUILD_NVCC_THREADS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
+if [[ "$BUILD_ENGINE" == indocker ]]; then
+  info "镜像层下载并发: $INDOCKER_MAX_CONCURRENT_DOWNLOADS"
+  [[ -z "$INDOCKER_REGISTRY_MIRROR" ]] || info "Docker Hub 镜像源: $INDOCKER_REGISTRY_MIRROR"
+fi
 [[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
 [[ "$flashinfer_wheelhouse_ready" == true ]] && info "flashinfer wheelhouse: $FLASHINFER_WHEELHOUSE_DIR（flashinfer-jit-cache==${flashinfer_version} 本地安装）"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
@@ -808,16 +942,29 @@ if [[ "$BUILD_ENGINE" == docker && "$BUILD_CACHE" == true ]]; then
   info "Docker Buildx 不可用，使用 Docker daemon 内置层缓存；如需 BUILD_CACHE_DIR，请安装 Buildx"
 fi
 info "构建命令: $(quote_cmd "${build_cmd[@]}")"
-info "导入命令: $(quote_cmd "${import_cmd[@]}")"
-info "推送命令: $(quote_cmd "${push_cmd[@]}")"
+if [[ "$BUILD_ENGINE" == indocker && "$INDOCKER_PUSH_DIRECT" == true ]]; then
+  info "indocker 会在镜像构建完成后直接登录 SWR 并推送；不会导出镜像归档"
+else
+  info "导入命令: $(quote_cmd "${import_cmd[@]}")"
+  info "推送命令: $(quote_cmd "${push_cmd[@]}")"
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
   exit 0
 fi
 
-info "开始在流水线执行机编译镜像"
+if [[ "$BUILD_ENGINE" == indocker && "$INDOCKER_PUSH_DIRECT" == true ]]; then
+  rm -f "$INDOCKER_OUTPUT_DIR/image-ref"
+fi
+info "开始构建镜像"
 "${build_cmd[@]}"
-if [[ "$BUILD_ENGINE" == indocker ]]; then
+if [[ "$BUILD_ENGINE" == indocker && "$INDOCKER_PUSH_DIRECT" == true ]]; then
+  image_ref_file="$INDOCKER_OUTPUT_DIR/image-ref"
+  [[ -s "$image_ref_file" ]] || die "indocker 未确认直接推送结果: $image_ref_file"
+  [[ "$(<"$image_ref_file")" == "$IMAGE" ]] || die "indocker 推送的镜像与目标不一致: $image_ref_file"
+  info "indocker 已直接推送镜像到 SWR: $IMAGE"
+  exit 0
+elif [[ "$BUILD_ENGINE" == indocker ]]; then
   [[ -s "$archive" ]] || die "indocker 未生成 OCI/tar 包: $archive"
   info "导入 indocker 镜像归档: $archive"
   ctr -n "$CTR_NAMESPACE" images import "$archive"

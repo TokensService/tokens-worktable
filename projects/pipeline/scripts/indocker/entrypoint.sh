@@ -13,10 +13,19 @@ SOURCE_DIR="${SOURCE_DIR:-/workspace/source}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-$SOURCE_DIR/docker/Dockerfile}"
 BUILD_CONTEXT_PATH="${BUILD_CONTEXT_PATH:-$SOURCE_DIR}"
 DOCKERD_TIMEOUT_SECONDS="${DOCKERD_TIMEOUT_SECONDS:-120}"
+INDOCKER_PUSH_DIRECT="${INDOCKER_PUSH_DIRECT:-false}"
 
 mkdir -p /var/lib/docker /var/run
+INDOCKER_MAX_CONCURRENT_DOWNLOADS="${INDOCKER_MAX_CONCURRENT_DOWNLOADS:-6}"
+[[ "$INDOCKER_MAX_CONCURRENT_DOWNLOADS" =~ ^[1-9][0-9]*$ ]] \
+  || die "INDOCKER_MAX_CONCURRENT_DOWNLOADS must be a positive integer"
+dockerd_args=(--host=unix:///var/run/docker.sock --data-root=/var/lib/docker
+  --max-concurrent-downloads="$INDOCKER_MAX_CONCURRENT_DOWNLOADS")
+if [[ -n "${INDOCKER_REGISTRY_MIRROR:-}" ]]; then
+  dockerd_args+=(--registry-mirror="$INDOCKER_REGISTRY_MIRROR")
+fi
 echo '[indocker] starting inner dockerd'
-dockerd --host=unix:///var/run/docker.sock --data-root=/var/lib/docker > /output/dockerd.log 2>&1 &
+dockerd "${dockerd_args[@]}" > /output/dockerd.log 2>&1 &
 dockerd_pid=$!
 trap 'kill "$dockerd_pid" 2>/dev/null || true' EXIT
 
@@ -37,6 +46,17 @@ done <<< "${BUILD_ARGS_TEXT:-}"
 echo "[indocker] building ${IMAGE_REF}"
 docker build --network="${BUILD_NETWORK:-host}" --provenance=false --sbom=false --file "$DOCKERFILE_PATH" --tag "$IMAGE_REF" "${build_args[@]}" "$BUILD_CONTEXT_PATH"
 docker image inspect "$IMAGE_REF" >/dev/null || die "built image is missing"
+if [[ "$INDOCKER_PUSH_DIRECT" == true ]]; then
+  [[ -n "${SWR_REGISTRY:-}" ]] || die "SWR_REGISTRY is required for direct push"
+  [[ -n "${SWR_USERNAME:-}" ]] || die "SWR_USERNAME is required for direct push"
+  [[ -n "${SWR_PASSWORD:-}" ]] || die "SWR_PASSWORD is required for direct push"
+  [[ "$IMAGE_REF" == "$SWR_REGISTRY/"* ]] || die "IMAGE_REF must use SWR_REGISTRY: $SWR_REGISTRY"
+  printf '%s' "$SWR_PASSWORD" | docker login "$SWR_REGISTRY" --username "$SWR_USERNAME" --password-stdin
+  docker push "$IMAGE_REF"
+  printf '%s\n' "$IMAGE_REF" > "$OUTPUT_DIR/image-ref"
+  echo "[indocker] pushed ${IMAGE_REF}"
+  exit 0
+fi
 OUTPUT_ARCHIVE="${OUTPUT_ARCHIVE:-$OUTPUT_DIR/vllm-image.tar}"
 docker save --output "$OUTPUT_ARCHIVE" "$IMAGE_REF"
 [[ -s "$OUTPUT_ARCHIVE" ]] || die "docker save produced an empty archive"
