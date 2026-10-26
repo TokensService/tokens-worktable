@@ -582,7 +582,17 @@ PY
 
 
 rewrite_xds_url_to_mapped_host() {
-  local original_url="$XDS_URL" rewrite_result mapped_host
+  local original_url="$XDS_URL" rewrite_result mapped_host mapped_execution_host
+
+  # The target may already expose XDS on the mapped Kubernetes node IP. In
+  # that case the URL itself does not change, but the dashboard still needs
+  # the mapped Grafana endpoint because the deployment was reached through a
+  # mapped execution target.
+  mapped_execution_host="$(mapped_execution_target_host)"
+  if [[ -n "$mapped_execution_host" ]]; then
+    XDS_NODE_IP_MAPPED=true
+    [[ -n "$XDS_API_HOST" ]] || XDS_API_HOST="$mapped_execution_host"
+  fi
 
   rewrite_result="$(python3 - "$XDS_URL" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
 import json
