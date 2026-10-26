@@ -32,7 +32,7 @@ mkdir -p "$work_dir/bad-mode/v1"
 printf 'weights\n' >"$work_dir/bad-mode/v1/model.bin"
 chmod 0644 "$work_dir/bad-mode/v1/model.bin"
 run_deploy_expect_failure \
-  'model weight files must have mode 755:' \
+  'model weight files must have mode at least 755:' \
   env DEPLOY_ON_TARGET_HOST=1 MOCK_HELM_DEPLOY=true \
     MODEL_PATH="$work_dir/bad-mode/v1" MODEL_CONTAINER_ROOT="$work_dir" MODEL_CACHE_HOST_PATH="$work_dir" \
     RUN_DIR="$work_dir/run-bad-mode" RENDER_DIR="$work_dir/run-bad-mode/rendered" \

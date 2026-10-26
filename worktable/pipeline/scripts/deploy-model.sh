@@ -180,9 +180,9 @@ validate_model_weights() {
 
   while IFS= read -r -d '' file; do
     mode="$(stat -c '%a' "$file")"
-    if [[ "$mode" != "755" ]]; then
+    if ((10#$mode < 755)); then
       if ((invalid_files == 0)); then
-        echo "model weight files must have mode 755:" >&2
+        echo "model weight files must have mode at least 755:" >&2
       fi
       printf '  %s (mode %s)\n' "$file" "$mode" >&2
       invalid_files=$((invalid_files + 1))
