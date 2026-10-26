@@ -24,7 +24,7 @@ mkdir -p "$work_dir/missing-v1"
 run_deploy_expect_failure \
   'model weight v1 directory not found:' \
   env DEPLOY_ON_TARGET_HOST=1 MOCK_HELM_DEPLOY=true \
-    MODEL_PATH="$work_dir/missing-v1/v1" MODEL_CONTAINER_ROOT="$work_dir" \
+    MODEL_PATH="$work_dir/missing-v1/v1" MODEL_CONTAINER_ROOT="$work_dir" MODEL_CACHE_HOST_PATH="$work_dir" \
     RUN_DIR="$work_dir/run-missing-v1" RENDER_DIR="$work_dir/run-missing-v1/rendered" \
     bash "$script"
 
@@ -34,7 +34,7 @@ chmod 0644 "$work_dir/bad-mode/v1/model.bin"
 run_deploy_expect_failure \
   'model weight files must have mode 755:' \
   env DEPLOY_ON_TARGET_HOST=1 MOCK_HELM_DEPLOY=true \
-    MODEL_PATH="$work_dir/bad-mode/v1" MODEL_CONTAINER_ROOT="$work_dir" \
+    MODEL_PATH="$work_dir/bad-mode/v1" MODEL_CONTAINER_ROOT="$work_dir" MODEL_CACHE_HOST_PATH="$work_dir" \
     RUN_DIR="$work_dir/run-bad-mode" RENDER_DIR="$work_dir/run-bad-mode/rendered" \
     bash "$script"
 
