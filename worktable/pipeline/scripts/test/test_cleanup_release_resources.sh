@@ -21,7 +21,7 @@ sleep() { :; }
 
 cleanup_current_release_resources
 
-grep -Fxq 'delete service ray-svc -n xds-current --ignore-not-found --wait=true' "$tmp/kubectl"
+grep -Fxq 'delete service/ray-svc -n xds-current --ignore-not-found --wait=true' "$tmp/kubectl"
 grep -Fxq -- '-TERM 101' "$tmp/kill"
 grep -Fxq -- '-TERM 202' "$tmp/kill"
 grep -Fq '端口 31008 仍被监听' "$LOG_FILE" && { echo 'listener verification must observe release after TERM' >&2; exit 1; }
@@ -29,9 +29,10 @@ grep -Fq '端口 31008 仍被监听' "$LOG_FILE" && { echo 'listener verificatio
 # Dry-run must show actions and never call kubectl or kill.
 : >"$tmp/kubectl"; : >"$tmp/kill"; rm -f "$tmp/released"; DRY_RUN=1
 cleanup_current_release_resources
-grep -Fq '[DRY_RUN] kubectl delete service ray-svc -n xds-current' "$LOG_FILE"
+grep -Fq '[DRY_RUN] kubectl delete service/ray-svc -n xds-current' "$LOG_FILE"
 grep -Fq '[DRY_RUN] kill -TERM 101' "$LOG_FILE"
-[[ ! -s "$tmp/kubectl" && ! -s "$tmp/kill" ]]
+! grep -q '^delete ' "$tmp/kubectl"
+[[ ! -s "$tmp/kill" ]]
 
 echo 'current release service/port cleanup test passed'
 
@@ -49,3 +50,34 @@ hostname() { [[ "$1" == '-I' ]] && printf '192.168.0.128\n'; }
 [[ "$(derive_cleanup_namespace; printf '%s' "$CLEANUP_NAMESPACE")" == 'xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' ]]
 
 echo 'mapped/default NodePort and namespace derivation test passed'
+
+# Even when release arguments are complete, standardize must also remove an
+# orphaned XDS NodePort outside the current release namespace.  This is the
+# regression for "required NodePort ... is already used by another Service".
+DRY_RUN=0
+FORCE_STALE_NODEPORT_CLEAN=1
+STEPS=release-resources
+CLEANUP_NAMESPACE=xds-current
+CLEANUP_SERVICE_NAME=ray-svc
+CLEANUP_NODE_PORT=31001
+DEPLOY_ARCH='current'
+DEPLOY_EXECUTOR='alice'
+DEPLOY_IMAGE_TAG='1334'
+WHITELIST_NS=''
+read_whitelist
+kubectl() {
+    printf '%s\n' "$*" >>"$tmp/kubectl"
+    if [[ "$*" == 'get service -A -o json' ]]; then
+        cat <<'JSON'
+{"items":[{"metadata":{"namespace":"xds-old","name":"orphan-svc","labels":{"app.kubernetes.io/instance":"xds"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
+JSON
+    elif [[ "$*" == 'get service -n xds-current -o name' ]]; then
+        echo service/ray-svc
+    fi
+}
+have() { [[ "$1" == ss ]]; }
+ss() { :; }
+do_standardize
+grep -Fxq 'delete service orphan-svc -n xds-old --ignore-not-found --wait=true' "$tmp/kubectl"
+
+echo 'explicit release cleanup also removes stale NodePort services'

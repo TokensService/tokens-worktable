@@ -882,10 +882,14 @@ do_standardize() {
             release-resources)
                 if [[ -z "$CLEANUP_NAMESPACE" && ( -z "$DEPLOY_ARCH" || -z "$DEPLOY_EXECUTOR" || -z "$DEPLOY_IMAGE_TAG" ) ]]; then
                     log "跳过本次发布资源清理：未提供 CLEANUP_NAMESPACE，也未完整提供 DEPLOY_STRATEGY/arch、BY/EXECUTOR、IMAGE_TAG"
-                    cleanup_stale_nodeport_services || return 1
                 else
                     cleanup_current_release_resources || return 1
                 fi
+                # 发布参数完整时，上面的精确清理只覆盖当前 release；Helm
+                # 仍可能在其它命名空间留下无 Pod 的 NodePort Service。
+                # 两条路径都必须执行全局孤立 XDS Service 扫描，否则下次
+                # 部署会报 required NodePort ... is already used by another Service。
+                cleanup_stale_nodeport_services || return 1
                 ;;
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
