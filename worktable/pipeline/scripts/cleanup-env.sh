@@ -981,7 +981,9 @@ main() {
         kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
         hugepages) step_hugepages "$HUGEPAGE_PATH";;
-        release-resources) cleanup_current_release_resources;;
+        release-resources)
+            cleanup_current_release_resources && cleanup_stale_nodeport_services
+            ;;
         uncordon) probe_k8s; step_uncordon;;
         *) die "未知 ACTION: $ACTION";;
     esac
