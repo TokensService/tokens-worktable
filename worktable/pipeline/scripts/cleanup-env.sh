@@ -49,6 +49,7 @@ LOG_FILE="${LOG_FILE:-/tmp/cleanup-env_$(date +%Y%m%d_%H%M%S).log}"
 NODE="${NODE:-${K8S_NODE_NAME:-}}"
 WHITELIST_NS="${WHITELIST_NS:-}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
+FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
@@ -200,9 +201,6 @@ node_port_for_ip() {
         192.168.47.35) echo 31008 ;; 192.168.47.181) echo 31009 ;;
         192.168.47.115) echo 31040 ;; 192.168.47.3) echo 31041 ;; 192.168.47.71) echo 31042 ;;
         192.168.47.44) echo 31043 ;; 192.168.47.214) echo 31044 ;; 192.168.47.92) echo 31035 ;; 192.168.47.148) echo 31036 ;;
-        192.168.47.4) echo 32004 ;; 192.168.47.109) echo 32109 ;; 192.168.47.112) echo 32112 ;;
-        192.168.47.201) echo 32201 ;; 192.168.47.85) echo 32085 ;; 192.168.47.141) echo 32141 ;;
-        192.168.47.90) echo 32090 ;; 192.168.47.15) echo 32015 ;; 192.168.47.32) echo 32032 ;; 192.168.47.246) echo 32246 ;;
         *) echo 31365 ;;
     esac
 }
@@ -303,6 +301,45 @@ cleanup_current_release_resources() {
         fi
     done
     terminate_port_listener "$CLEANUP_NODE_PORT"
+}
+
+# Helm uninstall can leave a NodePort Service behind when the namespace has no
+# Pods.  Such a Service is invisible to clean_namespace but still reserves the
+# port cluster-wide.  The standalone BNT cleanup opts into removing only
+# deployment-shaped Services outside the protected namespace allowlist.
+cleanup_stale_nodeport_services() {
+    [[ "$FORCE_STALE_NODEPORT_CLEAN" == "1" ]] || return 0
+    probe_k8s
+    [[ "$HAS_KUBECTL" == "1" ]] || return 0
+    read_whitelist
+    local service_json row ns name type ports labels matched
+    service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
+    while IFS=$'\t' read -r ns name type ports labels; do
+        [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
+        is_whitelisted "$ns" && continue
+        matched=0
+        [[ "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
+        ((matched == 1)) || continue
+        log "发现孤立 XDS NodePort Service: $ns/$name ports=$ports"
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  [DRY_RUN] kubectl delete service $name -n $ns --ignore-not-found --wait=true"
+        else
+            kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
+        fi
+    done < <(python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+for item in data.get("items", []):
+    meta=item.get("metadata", {})
+    spec=item.get("spec", {})
+    if spec.get("type") != "NodePort":
+        continue
+    ports=",".join(str(p.get("nodePort")) for p in spec.get("ports", []) if p.get("nodePort"))
+    labels=" ".join(f"{k}={v}" for k,v in (meta.get("labels") or {}).items())
+    print("\t".join((meta.get("namespace", ""), meta.get("name", ""), spec.get("type", ""), ports, labels)))
+' <<<"$service_json")
 }
 
 # ---------------- STEP: clean-containers ----------------
@@ -845,6 +882,7 @@ do_standardize() {
             release-resources)
                 if [[ -z "$CLEANUP_NAMESPACE" && ( -z "$DEPLOY_ARCH" || -z "$DEPLOY_EXECUTOR" || -z "$DEPLOY_IMAGE_TAG" ) ]]; then
                     log "跳过本次发布资源清理：未提供 CLEANUP_NAMESPACE，也未完整提供 DEPLOY_STRATEGY/arch、BY/EXECUTOR、IMAGE_TAG"
+                    cleanup_stale_nodeport_services || return 1
                 else
                     cleanup_current_release_resources || return 1
                 fi
@@ -892,7 +930,7 @@ do_remote() {
     remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done

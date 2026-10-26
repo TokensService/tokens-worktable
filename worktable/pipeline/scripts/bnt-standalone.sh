@@ -6,6 +6,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACTION="${ACTION:-standardize}"
 export EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
+# The standalone entrypoint is used to reclaim resources before a new XDS
+# deployment.  It must also remove orphaned XDS NodePort Services that have no
+# remaining Pods, otherwise the next Helm install can fail on a port collision.
+export FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-1}"
 if [[ "$ACTION" == check-health ]]; then
     ENTRY_SCRIPT="$SCRIPT_DIR/check-env.sh"
 else
