@@ -11,6 +11,11 @@ export EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 # remaining Pods, otherwise the next Helm install can fail on a port collision.
 export FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-1}"
 export CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-1}"
+# Standalone cleanup is run before a new deployment and may not receive the
+# rendered target IP.  Scan every XDS NodePort instead of trusting one local
+# address-to-port mapping; protected namespaces are still skipped by the
+# cleanup script.
+export CLEANUP_ALL_XDS_NODEPORTS="${CLEANUP_ALL_XDS_NODEPORTS:-1}"
 if [[ "$ACTION" == check-health ]]; then
     ENTRY_SCRIPT="$SCRIPT_DIR/check-env.sh"
 else
