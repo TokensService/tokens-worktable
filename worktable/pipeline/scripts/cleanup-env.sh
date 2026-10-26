@@ -318,7 +318,10 @@ cleanup_stale_nodeport_services() {
         [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
         is_whitelisted "$ns" && continue
         matched=0
-        [[ "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
+        # XDS release namespaces are generated as xds-*.  Match the namespace
+        # as well as the usual Service name/labels so a renamed Service cannot
+        # keep reserving the NodePort.
+        [[ "$ns" == xds-* || "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
         [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
         [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
         ((matched == 1)) || continue

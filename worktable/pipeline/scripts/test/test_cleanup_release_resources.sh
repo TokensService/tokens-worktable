@@ -69,7 +69,7 @@ kubectl() {
     printf '%s\n' "$*" >>"$tmp/kubectl"
     if [[ "$*" == 'get service -A -o json' ]]; then
         cat <<'JSON'
-{"items":[{"metadata":{"namespace":"xds-old","name":"orphan-svc","labels":{"app.kubernetes.io/instance":"xds"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
+{"items":[{"metadata":{"namespace":"xds-old","name":"renamed-service","labels":{}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
 JSON
     elif [[ "$*" == 'get service -n xds-current -o name' ]]; then
         echo service/ray-svc
@@ -78,6 +78,6 @@ JSON
 have() { [[ "$1" == ss ]]; }
 ss() { :; }
 do_standardize
-grep -Fxq 'delete service orphan-svc -n xds-old --ignore-not-found --wait=true' "$tmp/kubectl"
+grep -Fxq 'delete service renamed-service -n xds-old --ignore-not-found --wait=true' "$tmp/kubectl"
 
 echo 'explicit release cleanup also removes stale NodePort services'
