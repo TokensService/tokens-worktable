@@ -170,6 +170,35 @@ resolve_container_model_path() {
 
 resolve_container_model_path
 
+validate_model_weights() {
+  local model_path="${MODEL_PATH%/}" file mode invalid_files=0
+
+  [[ -n "$model_path" && "$model_path" != "/" ]] || {
+    echo "model weight v1 directory is empty" >&2
+    return 2
+  }
+  [[ "${model_path##*/}" == "v1" && -d "$model_path" ]] || {
+    echo "model weight v1 directory not found: $model_path" >&2
+    return 2
+  }
+
+  while IFS= read -r -d '' file; do
+    mode="$(stat -c '%a' "$file")"
+    if [[ "$mode" != "755" ]]; then
+      if ((invalid_files == 0)); then
+        echo "model weight files must have mode 755:" >&2
+      fi
+      printf '  %s (mode %s)\n' "$file" "$mode" >&2
+      invalid_files=$((invalid_files + 1))
+    fi
+  done < <(find -P "$model_path" -type f -print0)
+
+  if ((invalid_files > 0)); then
+    echo "model weight permission check failed: $invalid_files file(s) are not 755" >&2
+    return 2
+  fi
+}
+
 remote_quote() {
   local value="$1"
   value="${value//\'/\'\"\'\"\'}"
@@ -483,6 +512,8 @@ if [[ "$DEPLOY_ON_TARGET_HOST" != "1" && "$MOCK_HELM_DEPLOY" != "true" ]]; then
   deploy_from_target_host
   exit $?
 fi
+
+validate_model_weights
 
 [[ -f "$CHART_DIR/Chart.yaml" ]] || { echo "Chart.yaml not found: $CHART_DIR" >&2; exit 2; }
 [[ -f "$VALUES_FILE" ]] || { echo "values file not found: $VALUES_FILE" >&2; exit 2; }

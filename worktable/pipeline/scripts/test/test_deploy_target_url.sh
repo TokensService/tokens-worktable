@@ -6,6 +6,11 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$work_dir/chart" "$work_dir/bin" "$work_dir/run/rendered"
+mkdir -p "$work_dir/model-root/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1"
+printf 'test weights\n' >"$work_dir/model-root/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1/model.bin"
+chmod 0755 "$work_dir/model-root/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1/model.bin"
+model_path="$work_dir/model-root/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1"
+encoded_model_path="$(python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$model_path")"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
 printf '{}\n' >"$work_dir/values.yaml"
 cat >"$work_dir/architecture.request.json" <<'JSON'
@@ -62,7 +67,8 @@ ARCH_REQUEST_FILE="$work_dir/architecture.request.json" \
 RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME='test-arch' \
-MODEL_PATH='/mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' \
+MODEL_PATH="$model_path" \
+MODEL_CONTAINER_ROOT="$work_dir/model-root" \
 TARGET_HOSTS='[{"ip":"192.168.0.78:2222"}]' \
 XDS_URL='' \
 HELM_BIN="$work_dir/bin/helm" \
@@ -76,7 +82,7 @@ bash "$script_dir/deploy-model.sh" >"$work_dir/deploy.log"
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/architectures' "$work_dir/curl.log"
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/test-arch' "$work_dir/curl.log"
-python3 - "$work_dir/model.payload.json" <<'PY'
+python3 - "$work_dir/model.payload.json" "$model_path" <<'PY'
 import json
 import sys
 
@@ -85,7 +91,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 assert payload["model"] == "test-arch", payload
 assert payload["arch_name"] == "test-arch", payload
 assert payload["spec_package"] == "test-package", payload
-assert payload["local_info"]["path"] == "/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1", payload
+assert payload["local_info"]["path"] == sys.argv[2], payload
 PY
 
 
@@ -99,7 +105,7 @@ fi
 grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$runtime_env"
 grep -Fxq 'export SERVICE_API=http://192.168.31.175:31465/xds/v1' "$runtime_env"
 grep -Fxq 'export MODEL_API=http://192.168.31.175:31465/xds/v1/models/test-arch' "$runtime_env"
-grep -Fq 'http://1.95.87.43:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd0830/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=d03b4a32-c632-42c3-9077-0e1586732576&var-model_name=%2Fhome%2Fservice%2Fworks%2Fmodels_ssd%2FGLM-5.2-NVFP4-W4A4-MG39-BNT3%2Fv1&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s' "$work_dir/deploy.log"
+grep -Fq "http://1.95.87.43:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd0830/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=d03b4a32-c632-42c3-9077-0e1586732576&var-model_name=${encoded_model_path}&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s" "$work_dir/deploy.log"
 grep -Fxq 'EMS_NAMESPACE=op-ems' "$work_dir/deploy.log"
 
 # An explicitly supplied URL may still contain the SSH/NAT endpoint. When a
@@ -119,7 +125,8 @@ ARCH_REQUEST_FILE="$work_dir/architecture.request.json" \
 RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME='test-arch' \
-MODEL_PATH='/mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' \
+MODEL_PATH="$model_path" \
+MODEL_CONTAINER_ROOT="$work_dir/model-root" \
 TARGET_HOSTS='[{"ip":"192.168.0.78:2222"}]' \
 TARGET_NODE_IP_MAP='{"192.168.0.78:2222":"192.168.31.175"}' \
 XDS_URL='http://192.168.31.175:31465/xds/v1/chat/completions' \
@@ -134,7 +141,7 @@ bash "$script_dir/deploy-model.sh" >"$work_dir/deploy-explicit.log"
 grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
 grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$explicit_runtime_env"
 grep -Fxq 'export XDS_API_HOST=192.168.31.175' "$explicit_runtime_env"
-grep -Fq 'http://115.120.28.19:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=df43d24f-0d62-4c5a-a1ab-f874d47461c7&var-model_name=%2Fhome%2Fservice%2Fworks%2Fmodels_ssd%2FGLM-5.2-NVFP4-W4A4-MG39-BNT3%2Fv1&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s' "$work_dir/deploy-explicit.log"
+grep -Fq "http://115.120.28.19:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd/vllm-bnt3?orgId=1&var-DS_PROMETHEUS=df43d24f-0d62-4c5a-a1ab-f874d47461c7&var-model_name=${encoded_model_path}&var-xds_namespace=xds-test-arch-local&from=now-15m&to=now&refresh=5s" "$work_dir/deploy-explicit.log"
 grep -Fq 'EMS_NAMESPACE=custom-ems' "$work_dir/deploy-explicit.log"
 grep -Fxq 'export EMS_NAMESPACE=custom-ems' "$explicit_runtime_env"
 

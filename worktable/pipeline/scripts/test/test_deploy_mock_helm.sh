@@ -6,6 +6,9 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$work_dir/bin" "$work_dir/rendered/xds-cluster"
+mkdir -p "$work_dir/mock-weight/v1"
+printf 'mock weights\n' >"$work_dir/mock-weight/v1/model.bin"
+chmod 0755 "$work_dir/mock-weight/v1/model.bin"
 printf '{"hosts":[{"ip":"192.168.31.7"}]}' >"$work_dir/rendered/node-labels.json"
 printf '{}' >"$work_dir/rendered/resources.rendered.json"
 printf '{}' >"$work_dir/rendered/architecture.request.json"
@@ -37,7 +40,8 @@ NODE_LABELS_FILE="$work_dir/rendered/node-labels.json" \
 ARCH_NAME='mock-arch' \
 MODEL_NAME='mock-model' \
 MODEL_ENDPOINT='mock-model' \
-MODEL_PATH='/mnt/paas/mock-weight/v1' \
+MODEL_PATH="$work_dir/mock-weight/v1" \
+MODEL_CONTAINER_ROOT="$work_dir" \
 bash "$script_dir/deploy-model.sh" >"$work_dir/output"
 
 grep -Fxq '[mock] Helm deployment, readiness checks, log collection, and model registration skipped' "$work_dir/output"

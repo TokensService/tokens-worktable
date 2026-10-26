@@ -5,6 +5,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
 
 mkdir -p "$work_dir/chart" "$work_dir/bin" "$work_dir/run/rendered"
+mkdir -p "$work_dir/model-root/test-model/v1"
+printf 'test weights\n' >"$work_dir/model-root/test-model/v1/model.bin"
+chmod 0755 "$work_dir/model-root/test-model/v1/model.bin"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
 printf '{}\n' >"$work_dir/values.yaml"
 cat >"$work_dir/architecture.request.json" <<'JSON'
@@ -80,6 +83,8 @@ ARCH_REQUEST_FILE="$work_dir/architecture.request.json" \
 RESOURCE_MANIFEST="$work_dir/run/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME='test-arch' \
+MODEL_PATH="$work_dir/model-root/test-model/v1" \
+MODEL_CONTAINER_ROOT="$work_dir/model-root" \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 XDS_URL='http://192.168.0.78:30079/xds/v1' \
 HELM_BIN="$work_dir/bin/helm" \
