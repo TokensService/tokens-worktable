@@ -81,3 +81,38 @@ do_standardize
 grep -Fxq 'delete service renamed-service -n xds-old --ignore-not-found --wait=true' "$tmp/kubectl"
 
 echo 'explicit release cleanup also removes stale NodePort services'
+
+# A live old XDS release on another node must be removed through Helm/Ray,
+# otherwise deleting only the Service allows it to be recreated and the next
+# deployment still gets "required NodePort ... already used".
+CLEANUP_CONFLICTING_NODEPORT=1
+CLEANUP_NAMESPACE=xds-current
+CLEANUP_NODE_PORT=31001
+HAS_KUBECTL=1
+HAS_HELM=1
+old_ns='xds-old-live'
+old_deleted="$tmp/old-deleted"
+probe_k8s() { HAS_KUBECTL=1; HAS_HELM=1; }
+helm() {
+    printf 'helm %s\n' "$*" >>"$tmp/kubectl"
+    if [[ "$1" == list ]]; then printf 'xds\n'; fi
+}
+kubectl() {
+    printf '%s\n' "$*" >>"$tmp/kubectl"
+    if [[ "$*" == 'get service -A -o json' ]]; then
+        cat <<JSON
+{"items":[{"metadata":{"namespace":"$old_ns","name":"ray-svc","labels":{"app.kubernetes.io/name":"ray"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
+JSON
+    elif [[ "$*" == "get service ray-svc -n $old_ns" ]]; then
+        [[ -e "$old_deleted" ]] && return 1
+        return 0
+    elif [[ "$*" == "delete service ray-svc -n $old_ns --ignore-not-found --wait=true" ]]; then
+        touch "$old_deleted"
+    fi
+}
+cleanup_conflicting_nodeport_services
+grep -Fxq 'helm uninstall xds -n xds-old-live --timeout=300s' "$tmp/kubectl"
+grep -Fxq 'delete raycluster xds-kuberay -n xds-old-live --ignore-not-found --wait=false' "$tmp/kubectl"
+grep -Fxq 'delete service ray-svc -n xds-old-live --ignore-not-found --wait=true' "$tmp/kubectl"
+grep -Fq '已释放 NodePort 31001' "$LOG_FILE"
+echo 'live conflicting XDS release cleanup passed'

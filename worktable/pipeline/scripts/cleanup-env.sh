@@ -22,6 +22,7 @@
 #   CLEANUP_NAMESPACE=       release-resources 动作要删除 Service 的命名空间
 #   CLEANUP_SERVICE_NAME=ray-svc release-resources 动作要删除的 Service 名称
 #   CLEANUP_NODE_PORT=       release-resources 动作要释放的本次 NodePort
+#   CLEANUP_CONFLICTING_NODEPORT=1  standardize 时清理占用本次 NodePort 的旧 XDS release
 #   DEPLOY_STRATEGY/arch=     本次发布架构；与 BY/EXECUTOR、IMAGE_TAG 一起用于推导 namespace
 #   BY/EXECUTOR=              本次发布执行人；与架构、IMAGE_TAG 一起用于推导 namespace
 #   IMAGE_TAG=                本次镜像标签；与架构、执行人一起用于推导 namespace
@@ -50,6 +51,7 @@ NODE="${NODE:-${K8S_NODE_NAME:-}}"
 WHITELIST_NS="${WHITELIST_NS:-}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
+CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-0}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
@@ -244,6 +246,14 @@ port_listener_pids() {
     return 1
 }
 
+service_has_backends() {
+    local ns=$1 name=$2 addresses slices
+    addresses=$(kubectl get endpoints "$name" -n "$ns" -o jsonpath='{range .subsets[*].addresses[*]}x{end}' 2>/dev/null || true)
+    [[ -n "$addresses" ]] && return 0
+    slices=$(kubectl get endpointslice -n "$ns" -l "kubernetes.io/service-name=$name" -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}x{end}' 2>/dev/null || true)
+    [[ -n "$slices" ]]
+}
+
 terminate_port_listener() {
     local port=$1 pid attempt pids
     local -a remaining
@@ -325,12 +335,82 @@ cleanup_stale_nodeport_services() {
         [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
         [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
         ((matched == 1)) || continue
+        if service_has_backends "$ns" "$name"; then
+            log "跳过仍有后端的 XDS NodePort Service: $ns/$name ports=$ports"
+            continue
+        fi
         log "发现孤立 XDS NodePort Service: $ns/$name ports=$ports"
         if [[ "$DRY_RUN" == "1" ]]; then
             log "  [DRY_RUN] kubectl delete service $name -n $ns --ignore-not-found --wait=true"
         else
             kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
         fi
+    done < <(python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+for item in data.get("items", []):
+    meta=item.get("metadata", {})
+    spec=item.get("spec", {})
+    if spec.get("type") != "NodePort":
+        continue
+    ports=",".join(str(p.get("nodePort")) for p in spec.get("ports", []) if p.get("nodePort"))
+    labels=" ".join(f"{k}={v}" for k,v in (meta.get("labels") or {}).items())
+    print("\t".join((meta.get("namespace", ""), meta.get("name", ""), spec.get("type", ""), ports, labels)))
+' <<<"$service_json")
+}
+
+# A NodePort can still be reserved by a live old XDS release on another node.
+# Removing only its Service is insufficient because Helm/Ray can recreate it.
+# The standalone entrypoint opts into removing the owning Helm release first,
+# then deletes the RayCluster and Service and waits for the port reservation to
+# disappear. Protected namespaces are never touched.
+cleanup_conflicting_nodeport_services() {
+    [[ "$CLEANUP_CONFLICTING_NODEPORT" == "1" ]] || return 0
+    [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] || return 0
+    probe_k8s
+    [[ "$HAS_KUBECTL" == "1" ]] || return 0
+    read_whitelist
+    local service_json ns name type ports labels matched rels rel attempt
+    service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
+    while IFS=$'\t' read -r ns name type ports labels; do
+        [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
+        case ",$ports," in
+            *,"$CLEANUP_NODE_PORT",*) ;;
+            *) continue ;;
+        esac
+        [[ "$ns" != "${CLEANUP_NAMESPACE:-}" ]] || continue
+        is_whitelisted "$ns" && continue
+        matched=0
+        [[ "$ns" == xds-* || "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
+        ((matched == 1)) || continue
+
+        log "发现占用 NodePort $CLEANUP_NODE_PORT 的旧 XDS release: $ns/$name"
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  [DRY_RUN] 清理 namespace=$ns 的 Helm/Ray 资源"
+            continue
+        fi
+
+        if [[ "$HAS_HELM" == "1" ]]; then
+            rels=$(helm list -n "$ns" -q 2>/dev/null || true)
+            while read -r rel; do
+                [[ -z "$rel" ]] && continue
+                log "  helm uninstall $rel (ns=$ns)"
+                helm uninstall "$rel" -n "$ns" --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || return 1
+            done <<< "$rels"
+        fi
+        kubectl delete raycluster xds-kuberay -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
+        for attempt in 1 2 3 4 5; do
+            kubectl get service "$name" -n "$ns" >/dev/null 2>&1 || break
+            sleep 1
+        done
+        if kubectl get service "$name" -n "$ns" >/dev/null 2>&1; then
+            log "ERROR: 旧 XDS Service 仍占用 NodePort $CLEANUP_NODE_PORT: $ns/$name"
+            return 1
+        fi
+        log "  已释放 NodePort $CLEANUP_NODE_PORT: $ns/$name"
     done < <(python3 -c '
 import json,sys
 data=json.load(sys.stdin)
@@ -888,6 +968,10 @@ do_standardize() {
                 else
                     cleanup_current_release_resources || return 1
                 fi
+                # 即使没有当前 release 的 namespace，目标节点的 NodePort
+                # 仍然可以被其它节点上的旧 XDS release 占用。
+                [[ -n "$CLEANUP_NODE_PORT" ]] || CLEANUP_NODE_PORT="$(resolved_cleanup_node_port)"
+                cleanup_conflicting_nodeport_services || return 1
                 # 发布参数完整时，上面的精确清理只覆盖当前 release；Helm
                 # 仍可能在其它命名空间留下无 Pod 的 NodePort Service。
                 # 两条路径都必须执行全局孤立 XDS Service 扫描，否则下次
@@ -937,7 +1021,7 @@ do_remote() {
     remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN CLEANUP_CONFLICTING_NODEPORT NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
