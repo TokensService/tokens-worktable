@@ -317,116 +317,20 @@ cleanup_current_release_resources() {
     terminate_port_listener "$CLEANUP_NODE_PORT"
 }
 
-# Helm uninstall can leave a NodePort Service behind when the namespace has no
-# Pods.  Such a Service is invisible to clean_namespace but still reserves the
-# port cluster-wide.  The standalone BNT cleanup opts into removing only
-# deployment-shaped Services outside the protected namespace allowlist.
+# A stale NodePort can remain when a release namespace has no Pods.  It still
+# reserves the port cluster-wide, but strict target-only mode intentionally does
+# not perform cluster-wide NodePort cleanup.
+# Strict target-only mode intentionally does not perform cluster-wide NodePort
+# cleanup.  These compatibility entry points are no-ops so stale environment
+# variables cannot cause deletion in another namespace or on another machine.
 cleanup_stale_nodeport_services() {
-    [[ "$FORCE_STALE_NODEPORT_CLEAN" == "1" ]] || return 0
-    probe_k8s
-    [[ "$HAS_KUBECTL" == "1" ]] || return 0
-    read_whitelist
-    local service_json row ns name type ports labels matched
-    service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
-    while IFS=$'\t' read -r ns name type ports labels; do
-        [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
-        is_whitelisted "$ns" && continue
-        matched=0
-        # XDS release namespaces are generated as xds-*.  Match the namespace
-        # as well as the usual Service name/labels so a renamed Service cannot
-        # keep reserving the NodePort.
-        [[ "$ns" == xds-* || "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
-        [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
-        [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
-        ((matched == 1)) || continue
-        if service_has_backends "$ns" "$name"; then
-            log "跳过仍有后端的 XDS NodePort Service: $ns/$name ports=$ports"
-            continue
-        fi
-        log "发现孤立 XDS NodePort Service: $ns/$name ports=$ports"
-        if [[ "$DRY_RUN" == "1" ]]; then
-            log "  [DRY_RUN] kubectl delete service $name -n $ns --ignore-not-found --wait=true"
-        else
-            kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
-        fi
-    done < <(python3 -c '
-import json,sys
-data=json.load(sys.stdin)
-for item in data.get("items", []):
-    meta=item.get("metadata", {})
-    spec=item.get("spec", {})
-    if spec.get("type") != "NodePort":
-        continue
-    ports=",".join(str(p.get("nodePort")) for p in spec.get("ports", []) if p.get("nodePort"))
-    labels=" ".join(f"{k}={v}" for k,v in (meta.get("labels") or {}).items())
-    print("\t".join((meta.get("namespace", ""), meta.get("name", ""), spec.get("type", ""), ports, labels)))
-' <<<"$service_json")
+    log "跳过跨命名空间 NodePort 清理：仅允许操作当前发布命名空间"
+    return 0
 }
 
-# A NodePort can still be reserved by a live old XDS release on another node.
-# Removing only its Service is insufficient because Helm/Ray can recreate it.
-# The standalone entrypoint opts into removing the owning Helm release first,
-# then deletes the RayCluster and Service and waits for the port reservation to
-# disappear. Protected namespaces are never touched.
 cleanup_conflicting_nodeport_services() {
-    [[ "$CLEANUP_CONFLICTING_NODEPORT" == "1" ]] || return 0
-    [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] || return 0
-    probe_k8s
-    [[ "$HAS_KUBECTL" == "1" ]] || return 0
-    read_whitelist
-    local service_json ns name type ports labels matched rels rel attempt
-    service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
-    while IFS=$'\t' read -r ns name type ports labels; do
-        [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
-        case ",$ports," in
-            *,"$CLEANUP_NODE_PORT",*) ;;
-            *) continue ;;
-        esac
-        [[ "$ns" != "${CLEANUP_NAMESPACE:-}" ]] || continue
-        is_whitelisted "$ns" && continue
-        matched=0
-        [[ "$ns" == xds-* || "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
-        [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
-        [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
-        ((matched == 1)) || continue
-
-        log "发现占用 NodePort $CLEANUP_NODE_PORT 的旧 XDS release: $ns/$name"
-        if [[ "$DRY_RUN" == "1" ]]; then
-            log "  [DRY_RUN] 清理 namespace=$ns 的 Helm/Ray 资源"
-            continue
-        fi
-
-        if [[ "$HAS_HELM" == "1" ]]; then
-            rels=$(helm list -n "$ns" -q 2>/dev/null || true)
-            while read -r rel; do
-                [[ -z "$rel" ]] && continue
-                log "  helm uninstall $rel (ns=$ns)"
-                helm uninstall "$rel" -n "$ns" --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || return 1
-            done <<< "$rels"
-        fi
-        kubectl delete raycluster xds-kuberay -n "$ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-        kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
-        for attempt in 1 2 3 4 5; do
-            kubectl get service "$name" -n "$ns" >/dev/null 2>&1 || break
-            sleep 1
-        done
-        if kubectl get service "$name" -n "$ns" >/dev/null 2>&1; then
-            log "ERROR: 旧 XDS Service 仍占用 NodePort $CLEANUP_NODE_PORT: $ns/$name"
-            return 1
-        fi
-        log "  已释放 NodePort $CLEANUP_NODE_PORT: $ns/$name"
-    done < <(python3 -c '
-import json,sys
-data=json.load(sys.stdin)
-for item in data.get("items", []):
-    meta=item.get("metadata", {})
-    spec=item.get("spec", {})
-    if spec.get("type") != "NodePort":
-        continue
-    ports=",".join(str(p.get("nodePort")) for p in spec.get("ports", []) if p.get("nodePort"))
-    labels=" ".join(f"{k}={v}" for k,v in (meta.get("labels") or {}).items())
-    print("\t".join((meta.get("namespace", ""), meta.get("name", ""), spec.get("type", ""), ports, labels)))
-' <<<"$service_json")
+    log "跳过跨命名空间 NodePort 冲突清理：仅允许操作当前发布命名空间"
+    return 0
 }
 
 # ---------------- STEP: clean-containers ----------------
@@ -972,15 +876,9 @@ do_standardize() {
                 else
                     cleanup_current_release_resources || return 1
                 fi
-                # 即使没有当前 release 的 namespace，目标节点的 NodePort
-                # 仍然可以被其它节点上的旧 XDS release 占用。
-                [[ -n "$CLEANUP_NODE_PORT" ]] || CLEANUP_NODE_PORT="$(resolved_cleanup_node_port)"
-                cleanup_conflicting_nodeport_services || return 1
-                # 发布参数完整时，上面的精确清理只覆盖当前 release；Helm
-                # 仍可能在其它命名空间留下无 Pod 的 NodePort Service。
-                # 两条路径都必须执行全局孤立 XDS Service 扫描，否则下次
-                # 部署会报 required NodePort ... is already used by another Service。
-                cleanup_stale_nodeport_services || return 1
+                # 严格目标机模式：不扫描集群其它命名空间，也不卸载其它
+                # release。NodePort 冲突由部署阶段报告，避免误杀其它机器
+                # 上仍在使用的 Service。
                 ;;
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
@@ -1072,9 +970,7 @@ main() {
         kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
         hugepages) step_hugepages "$HUGEPAGE_PATH";;
-        release-resources)
-            cleanup_current_release_resources && cleanup_stale_nodeport_services
-            ;;
+        release-resources) cleanup_current_release_resources;;
         uncordon) probe_k8s; step_uncordon;;
         *) die "未知 ACTION: $ACTION";;
     esac

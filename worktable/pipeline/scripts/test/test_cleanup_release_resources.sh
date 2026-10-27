@@ -51,68 +51,20 @@ hostname() { [[ "$1" == '-I' ]] && printf '192.168.0.128\n'; }
 
 echo 'mapped/default NodePort and namespace derivation test passed'
 
-# Even when release arguments are complete, standardize must also remove an
-# orphaned XDS NodePort outside the current release namespace.  This is the
-# regression for "required NodePort ... is already used by another Service".
-DRY_RUN=0
+# Strict target-only mode must not query or delete Services cluster-wide.
 FORCE_STALE_NODEPORT_CLEAN=1
+CLEANUP_CONFLICTING_NODEPORT=1
 STEPS=release-resources
 CLEANUP_NAMESPACE=xds-current
 CLEANUP_SERVICE_NAME=ray-svc
 CLEANUP_NODE_PORT=31001
-DEPLOY_ARCH='current'
-DEPLOY_EXECUTOR='alice'
-DEPLOY_IMAGE_TAG='1334'
-WHITELIST_NS=''
-read_whitelist
-kubectl() {
-    printf '%s\n' "$*" >>"$tmp/kubectl"
-    if [[ "$*" == 'get service -A -o json' ]]; then
-        cat <<'JSON'
-{"items":[{"metadata":{"namespace":"xds-old","name":"renamed-service","labels":{}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
-JSON
-    elif [[ "$*" == 'get service -n xds-current -o name' ]]; then
-        echo service/ray-svc
-    fi
-}
-have() { [[ "$1" == ss ]]; }
-ss() { :; }
+DEPLOY_ARCH=current
+DEPLOY_EXECUTOR=alice
+DEPLOY_IMAGE_TAG=1334
+: >"$tmp/kubectl"
+kubectl() { printf '%s\n' "$*" >>"$tmp/kubectl"; }
 do_standardize
-grep -Fxq 'delete service renamed-service -n xds-old --ignore-not-found --wait=true' "$tmp/kubectl"
-
-echo 'explicit release cleanup also removes stale NodePort services'
-
-# A live old XDS release on another node must be removed through Helm/Ray,
-# otherwise deleting only the Service allows it to be recreated and the next
-# deployment still gets "required NodePort ... already used".
-CLEANUP_CONFLICTING_NODEPORT=1
-CLEANUP_NAMESPACE=xds-current
-CLEANUP_NODE_PORT=31001
-HAS_KUBECTL=1
-HAS_HELM=1
-old_ns='xds-old-live'
-old_deleted="$tmp/old-deleted"
-probe_k8s() { HAS_KUBECTL=1; HAS_HELM=1; }
-helm() {
-    printf 'helm %s\n' "$*" >>"$tmp/kubectl"
-    if [[ "$1" == list ]]; then printf 'xds\n'; fi
-}
-kubectl() {
-    printf '%s\n' "$*" >>"$tmp/kubectl"
-    if [[ "$*" == 'get service -A -o json' ]]; then
-        cat <<JSON
-{"items":[{"metadata":{"namespace":"$old_ns","name":"ray-svc","labels":{"app.kubernetes.io/name":"ray"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}
-JSON
-    elif [[ "$*" == "get service ray-svc -n $old_ns" ]]; then
-        [[ -e "$old_deleted" ]] && return 1
-        return 0
-    elif [[ "$*" == "delete service ray-svc -n $old_ns --ignore-not-found --wait=true" ]]; then
-        touch "$old_deleted"
-    fi
-}
-cleanup_conflicting_nodeport_services
-grep -Fxq 'helm uninstall xds -n xds-old-live --timeout=300s' "$tmp/kubectl"
-grep -Fxq 'delete raycluster xds-kuberay -n xds-old-live --ignore-not-found --wait=false' "$tmp/kubectl"
-grep -Fxq 'delete service ray-svc -n xds-old-live --ignore-not-found --wait=true' "$tmp/kubectl"
-grep -Fq '已释放 NodePort 31001' "$LOG_FILE"
-echo 'live conflicting XDS release cleanup passed'
+! grep -Fq 'get service -A' "$tmp/kubectl"
+! grep -Fq 'delete service ' "$tmp/kubectl"
+grep -Fq '跳过跨命名空间 NodePort' "$LOG_FILE"
+echo 'target-only cleanup does not scan or delete other namespaces'
