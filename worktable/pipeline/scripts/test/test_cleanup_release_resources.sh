@@ -62,9 +62,15 @@ DEPLOY_ARCH=current
 DEPLOY_EXECUTOR=alice
 DEPLOY_IMAGE_TAG=1334
 : >"$tmp/kubectl"
-kubectl() { printf '%s\n' "$*" >>"$tmp/kubectl"; }
+kubectl() {
+    printf '%s\n' "$*" >>"$tmp/kubectl"
+    if [[ "$*" == 'get service -A -o json' ]]; then
+        printf '%s\n' '{"items":[{"metadata":{"namespace":"xds-old","name":"ray-svc","labels":{"app.kubernetes.io/instance":"xds"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}'
+    fi
+}
 do_standardize
-! grep -Fq 'get service -A' "$tmp/kubectl"
-! grep -Fq 'delete service ' "$tmp/kubectl"
-grep -Fq '跳过跨命名空间 NodePort' "$LOG_FILE"
-echo 'target-only cleanup does not scan or delete other namespaces'
+grep -Fq 'get service -A -o json' "$tmp/kubectl"
+grep -Fq '[DRY_RUN] kubectl delete service ray-svc -n xds-old' "$LOG_FILE"
+! grep -Fq 'helm uninstall' "$tmp/kubectl"
+! grep -Fq 'delete raycluster' "$tmp/kubectl"
+echo 'target-only cleanup deletes only the selected port Service'

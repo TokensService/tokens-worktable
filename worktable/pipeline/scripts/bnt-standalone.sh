@@ -13,7 +13,7 @@ export EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 # namespaces/nodes.  A conflicting NodePort is reported by deployment and
 # must be resolved explicitly for the selected target.
 export FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
-export CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-0}"
+export CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-1}"
 if [[ "$ACTION" == check-health ]]; then
     ENTRY_SCRIPT="$SCRIPT_DIR/check-env.sh"
 else
