@@ -116,28 +116,3 @@ grep -Fxq 'delete raycluster xds-kuberay -n xds-old-live --ignore-not-found --wa
 grep -Fxq 'delete service ray-svc -n xds-old-live --ignore-not-found --wait=true' "$tmp/kubectl"
 grep -Fq '已释放 NodePort 31001' "$LOG_FILE"
 echo 'live conflicting XDS release cleanup passed'
-
-# Standalone cleanup must not depend on a possibly stale host-IP/NodePort map.
-CLEANUP_ALL_XDS_NODEPORTS=1
-CLEANUP_NODE_PORT=31365
-old_ns='xds-map-mismatch'
-old_deleted="$tmp/map-mismatch-deleted"
-kubectl() {
-    printf '%s\n' "$*" >>"$tmp/kubectl"
-    if [[ "$*" == 'get service -A -o json' ]]; then
-        printf '%s\n' '{"items":[{"metadata":{"namespace":"xds-map-mismatch","name":"ray-svc","labels":{"app.kubernetes.io/instance":"xds"}},"spec":{"type":"NodePort","ports":[{"nodePort":31001}]}}]}'
-    elif [[ "$*" == "get service ray-svc -n $old_ns" ]]; then
-        [[ -e "$old_deleted" ]] && return 1
-        return 0
-    elif [[ "$*" == "delete service ray-svc -n $old_ns --ignore-not-found --wait=true" ]]; then
-        touch "$old_deleted"
-    fi
-}
-helm() {
-    printf 'helm %s\n' "$*" >>"$tmp/kubectl"
-    if [[ "$1" == list ]]; then printf 'xds\n'; fi
-}
-cleanup_conflicting_nodeport_services
-grep -Fxq 'helm uninstall xds -n xds-map-mismatch --timeout=300s' "$tmp/kubectl"
-grep -Fxq 'delete service ray-svc -n xds-map-mismatch --ignore-not-found --wait=true' "$tmp/kubectl"
-echo 'standalone all-XDS-NodePort cleanup passed'

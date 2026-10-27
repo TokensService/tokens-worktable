@@ -23,7 +23,6 @@
 #   CLEANUP_SERVICE_NAME=ray-svc release-resources 动作要删除的 Service 名称
 #   CLEANUP_NODE_PORT=       release-resources 动作要释放的本次 NodePort
 #   CLEANUP_CONFLICTING_NODEPORT=1  standardize 时清理占用本次 NodePort 的旧 XDS release
-#   CLEANUP_ALL_XDS_NODEPORTS=1     standalone 时扫描并清理所有冲突的 XDS NodePort
 #   DEPLOY_STRATEGY/arch=     本次发布架构；与 BY/EXECUTOR、IMAGE_TAG 一起用于推导 namespace
 #   BY/EXECUTOR=              本次发布执行人；与架构、IMAGE_TAG 一起用于推导 namespace
 #   IMAGE_TAG=                本次镜像标签；与架构、执行人一起用于推导 namespace
@@ -53,7 +52,6 @@ WHITELIST_NS="${WHITELIST_NS:-}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
 CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-0}"
-CLEANUP_ALL_XDS_NODEPORTS="${CLEANUP_ALL_XDS_NODEPORTS:-0}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
@@ -380,12 +378,10 @@ cleanup_conflicting_nodeport_services() {
     service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
     while IFS=$'\t' read -r ns name type ports labels; do
         [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
-        if [[ "$CLEANUP_ALL_XDS_NODEPORTS" != "1" ]]; then
-            case ",$ports," in
-                *,"$CLEANUP_NODE_PORT",*) ;;
-                *) continue ;;
-            esac
-        fi
+        case ",$ports," in
+            *,"$CLEANUP_NODE_PORT",*) ;;
+            *) continue ;;
+        esac
         [[ "$ns" != "${CLEANUP_NAMESPACE:-}" ]] || continue
         is_whitelisted "$ns" && continue
         matched=0
@@ -394,11 +390,7 @@ cleanup_conflicting_nodeport_services() {
         [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
         ((matched == 1)) || continue
 
-        if [[ "$CLEANUP_ALL_XDS_NODEPORTS" == "1" ]]; then
-            log "发现旧 XDS NodePort Service: $ns/$name ports=$ports"
-        else
-            log "发现占用 NodePort $CLEANUP_NODE_PORT 的旧 XDS release: $ns/$name"
-        fi
+        log "发现占用 NodePort $CLEANUP_NODE_PORT 的旧 XDS release: $ns/$name"
         if [[ "$DRY_RUN" == "1" ]]; then
             log "  [DRY_RUN] 清理 namespace=$ns 的 Helm/Ray 资源"
             continue
@@ -419,14 +411,10 @@ cleanup_conflicting_nodeport_services() {
             sleep 1
         done
         if kubectl get service "$name" -n "$ns" >/dev/null 2>&1; then
-            log "ERROR: 旧 XDS Service 仍占用 NodePort ${CLEANUP_NODE_PORT:-unknown}: $ns/$name"
+            log "ERROR: 旧 XDS Service 仍占用 NodePort $CLEANUP_NODE_PORT: $ns/$name"
             return 1
         fi
-        if [[ "$CLEANUP_ALL_XDS_NODEPORTS" == "1" ]]; then
-            log "  已释放 XDS NodePort: $ns/$name"
-        else
-            log "  已释放 NodePort $CLEANUP_NODE_PORT: $ns/$name"
-        fi
+        log "  已释放 NodePort $CLEANUP_NODE_PORT: $ns/$name"
     done < <(python3 -c '
 import json,sys
 data=json.load(sys.stdin)
@@ -1037,7 +1025,7 @@ do_remote() {
     remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN CLEANUP_CONFLICTING_NODEPORT CLEANUP_ALL_XDS_NODEPORTS NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN CLEANUP_CONFLICTING_NODEPORT NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
