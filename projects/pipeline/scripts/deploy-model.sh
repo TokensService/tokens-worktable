@@ -15,19 +15,13 @@ normalize_kubernetes_name() {
 
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
-resolved_arch_name="${arch_name:-}"
-[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
-[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
-[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
-ARCH_NAME="${resolved_arch_name:-default}"
-PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
-# Match pull_render_config.sh so separately invoked pipeline stages share the
-# same execution-host rendered artifacts by default.
-RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
+RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
 # Pipeline artifacts are retained under ARCHIVE_DIR.  RUN_DIR is a temporary
 # render/deployment workspace and must not be used for execution-host logs.
 ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
+ARCH_NAME="${ARCH_NAME:-default}"
+PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
 EXECUTOR="${EXECUTOR:-}"
 [[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
 NAMESPACE_ARCH="${NAMESPACE_ARCH:-}"
@@ -53,8 +47,6 @@ ARCH_REQUEST_FILE="${ARCH_REQUEST_FILE:-${RENDER_DIR}/architecture.request.json}
 RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-${RENDER_DIR}/node-labels.json}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
-DEPLOY_EXECUTION_HOST="${DEPLOY_EXECUTION_HOST:-}"
-DEPLOY_EXECUTION_PORT="${DEPLOY_EXECUTION_PORT:-}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
@@ -117,6 +109,11 @@ MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_PATH_INPUT="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 MODEL_CONTAINER_ROOT="${MODEL_CONTAINER_ROOT:-/home/service/works/models_ssd}"
 MODEL_WEIGHT_NAME="${MODEL_WEIGHT_NAME:-}"
+MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
+if [[ -z "$MODEL_CACHE_HOST_PATH" ]]; then
+  MODEL_CACHE_HOST_PATH="$(load_persisted_environment_value "$PIPELINE_ENV_FILE" MODEL_CACHE_HOST_PATH)"
+fi
+MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-/mnt/xds/sfs}"
 GRAFANA_UNMAPPED_BASE_URL="${GRAFANA_UNMAPPED_BASE_URL:-http://1.95.87.43:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd0830/vllm-bnt3}"
 GRAFANA_MAPPED_BASE_URL="${GRAFANA_MAPPED_BASE_URL:-http://115.120.28.19:19602/d/f9ad7fd8-40a3-45c6-8965-919f99859ccd/vllm-bnt3}"
 GRAFANA_UNMAPPED_PROMETHEUS_UID="${GRAFANA_UNMAPPED_PROMETHEUS_UID:-d03b4a32-c632-42c3-9077-0e1586732576}"
@@ -144,9 +141,8 @@ EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
 ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
 PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill-64k}"
 PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode-64k}"
-PROFILING_MAX_ITERATIONS="${PROFILING_MAX_ITERATIONS:-3}"
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
-  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036,"192.168.47.4":32004,"192.168.47.109":32109,"192.168.47.112":32112,"192.168.47.201":32201,"192.168.47.85":32085,"192.168.47.141":32141,"192.168.47.90":32090,"192.168.47.15":32015,"192.168.47.32":32032,"192.168.47.246":32246}'
+  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036,"192.168.47.4":32004,"192.168.47.109":32109,"192.168.47.112":32112,"192.168.47.201":32201,"192.168.47.85":32085,"192.168.47.141":32141,"192.168.47.90":32090,"192.168.47.15":32015,"192.168.47.32":32032,"192.168.47.246":32246,"192.168.47.28":32028,"192.168.47.203":32203,"192.168.47.95":32095}'
 fi
 
 resolve_container_model_path() {
@@ -169,6 +165,35 @@ resolve_container_model_path() {
 }
 
 resolve_container_model_path
+
+validate_model_weights() {
+  local model_path="${MODEL_CACHE_HOST_PATH%/}/${MODEL_WEIGHT_NAME}/v1" file mode invalid_files=0
+
+  [[ "$MODEL_CACHE_HOST_PATH" == /* ]] || {
+    echo "MODEL_CACHE_HOST_PATH must be an absolute host path: $MODEL_CACHE_HOST_PATH" >&2
+    return 2
+  }
+  [[ "${model_path##*/}" == "v1" && -d "$model_path" ]] || {
+    echo "model weight v1 directory not found: $model_path (host path)" >&2
+    return 2
+  }
+
+  while IFS= read -r -d '' file; do
+    mode="$(stat -c '%a' "$file")"
+    if ((10#$mode < 755)); then
+      if ((invalid_files == 0)); then
+        echo "model weight files must have mode at least 755:" >&2
+      fi
+      printf '  %s (mode %s)\n' "$file" "$mode" >&2
+      invalid_files=$((invalid_files + 1))
+    fi
+  done < <(find -P "$model_path" -type f -print0)
+
+  if ((invalid_files > 0)); then
+    echo "model weight permission check failed: $invalid_files file(s) are not 755" >&2
+    return 2
+  fi
+}
 
 remote_quote() {
   local value="$1"
@@ -365,8 +390,6 @@ print(target_ip, target_port, user, password, sep="\t")
 PY
 )"
   IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD <<<"$parsed"
-  DEPLOY_EXECUTION_HOST="$target_ip"
-  DEPLOY_EXECUTION_PORT="$target_port"
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
@@ -390,14 +413,12 @@ PY
     printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
-    printf 'export DEPLOY_EXECUTION_HOST=%q\nexport DEPLOY_EXECUTION_PORT=%q\n' \
-      "$DEPLOY_EXECUTION_HOST" "$DEPLOY_EXECUTION_PORT"
     printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
     printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
     printf 'export ENABLE_PROFILING=%q\n' "$ENABLE_PROFILING"
+    printf 'export MODEL_CACHE_HOST_PATH=%q\n' "$MODEL_CACHE_HOST_PATH"
     printf 'export PROFILING_PREFILL_DIR=%q\n' "$PROFILING_PREFILL_DIR"
     printf 'export PROFILING_DECODE_DIR=%q\n' "$PROFILING_DECODE_DIR"
-    printf 'export PROFILING_MAX_ITERATIONS=%q\n' "$PROFILING_MAX_ITERATIONS"
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
@@ -436,13 +457,14 @@ PY
   run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
-  local mapped_target_host remote_output_filter
+  local mapped_target_host
   mapped_target_host="$(mapped_execution_target_host)"
-  remote_output_filter='/^(DEPLOY_EXECUTION_HOST|DEPLOY_EXECUTION_PORT)=/d'
   if [[ -n "$mapped_target_host" ]]; then
-    remote_output_filter='/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API|DEPLOY_EXECUTION_HOST|DEPLOY_EXECUTION_PORT)=/d'
-  fi
-  if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E "$remote_output_filter"; then
+    if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
+      [[ ! -e "$remote_env" ]] || unlink "$remote_env"
+      return 1
+    fi
+  elif ! run_remote "$target" "$target_port" "$remote_command"; then
     [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
@@ -468,14 +490,11 @@ PY
   {
     printf 'export TARGET_HEAD_LOG_DIR=%q\n' "$target_head_log_dir"
     printf 'export TARGET_HEAD_LOG_COLLECTOR_PID=%q\n' "$target_head_log_collector_pid"
-    printf 'export DEPLOY_EXECUTION_HOST=%q\nexport DEPLOY_EXECUTION_PORT=%q\n' \
-      "$DEPLOY_EXECUTION_HOST" "$DEPLOY_EXECUTION_PORT"
     printf 'export HEAD_LOG_DIR=%q\n' "$local_head_log_dir"
     printf 'export HEAD_LOG_COLLECTOR_PID=%q\n' "$local_head_log_collector_pid"
   } >>"$PIPELINE_ENV_FILE"
   [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
-  printf 'DEPLOY_EXECUTION_PORT=%s\n' "$target_port"
   ((${#returned_environment[@]} == 0)) || printf '%s\n' "${returned_environment[@]}"
 }
 
@@ -483,6 +502,8 @@ if [[ "$DEPLOY_ON_TARGET_HOST" != "1" && "$MOCK_HELM_DEPLOY" != "true" ]]; then
   deploy_from_target_host
   exit $?
 fi
+
+validate_model_weights
 
 [[ -f "$CHART_DIR/Chart.yaml" ]] || { echo "Chart.yaml not found: $CHART_DIR" >&2; exit 2; }
 [[ -f "$VALUES_FILE" ]] || { echo "values file not found: $VALUES_FILE" >&2; exit 2; }
@@ -596,7 +617,17 @@ PY
 
 
 rewrite_xds_url_to_mapped_host() {
-  local original_url="$XDS_URL" rewrite_result mapped_host
+  local original_url="$XDS_URL" rewrite_result mapped_host mapped_execution_host
+
+  # The target may already expose XDS on the mapped Kubernetes node IP. In
+  # that case the URL itself does not change, but the dashboard still needs
+  # the mapped Grafana endpoint because the deployment was reached through a
+  # mapped execution target.
+  mapped_execution_host="$(mapped_execution_target_host)"
+  if [[ -n "$mapped_execution_host" ]]; then
+    XDS_NODE_IP_MAPPED=true
+    [[ -n "$XDS_API_HOST" ]] || XDS_API_HOST="$mapped_execution_host"
+  fi
 
   rewrite_result="$(python3 - "$XDS_URL" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
 import json
@@ -740,9 +771,8 @@ persist_runtime_environment() {
     printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
-      DEPLOY_EXECUTION_HOST DEPLOY_EXECUTION_PORT \
       XDS_OM \
-      MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
+      MODEL_PATH MODEL_WEIGHT_NAME MODEL_CACHE_HOST_PATH DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
       EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
       ARCH_NAME EXECUTOR NAMESPACE_ARCH DEPLOY_STRATEGY BY IMAGE_NAME DEPLOY_IMAGE EMS_NAMESPACE; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
@@ -791,12 +821,11 @@ print_runtime_environment() {
   printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
   printf 'MODEL_API=%s\n' "$MODEL_API"
   printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
+  printf 'MODEL_CACHE_HOST_PATH=%s\n' "$MODEL_CACHE_HOST_PATH"
   printf 'EXECUTOR=%s\n' "$EXECUTOR"
   printf 'NAMESPACE_ARCH=%s\n' "$NAMESPACE_ARCH"
   printf 'DEPLOY_STRATEGY=%s\n' "$DEPLOY_STRATEGY"
   printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
-  [[ -z "$DEPLOY_EXECUTION_HOST" ]] || printf 'DEPLOY_EXECUTION_HOST=%s\n' "$DEPLOY_EXECUTION_HOST"
-  [[ -z "$DEPLOY_EXECUTION_PORT" ]] || printf 'DEPLOY_EXECUTION_PORT=%s\n' "$DEPLOY_EXECUTION_PORT"
 }
 
 wait_for_xds_api() {

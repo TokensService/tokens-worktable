@@ -6,6 +6,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACTION="${ACTION:-standardize}"
 export EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
+# The standalone entrypoint is used to reclaim resources before a new XDS
+# deployment.  It must also remove orphaned XDS NodePort Services that have no
+# remaining Pods, otherwise the next Helm install can fail on a port collision.
+# Strict target-only mode: never scan or delete Services from other
+# namespaces/nodes.  A conflicting NodePort is reported by deployment and
+# must be resolved explicitly for the selected target.
+export FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
+export CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-1}"
 if [[ "$ACTION" == check-health ]]; then
     ENTRY_SCRIPT="$SCRIPT_DIR/check-env.sh"
 else

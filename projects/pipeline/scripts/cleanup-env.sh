@@ -22,6 +22,7 @@
 #   CLEANUP_NAMESPACE=       release-resources 动作要删除 Service 的命名空间
 #   CLEANUP_SERVICE_NAME=ray-svc release-resources 动作要删除的 Service 名称
 #   CLEANUP_NODE_PORT=       release-resources 动作要释放的本次 NodePort
+#   CLEANUP_CONFLICTING_NODEPORT=1  standardize 时清理占用本次 NodePort 的旧 XDS release
 #   DEPLOY_STRATEGY/arch=     本次发布架构；与 BY/EXECUTOR、IMAGE_TAG 一起用于推导 namespace
 #   BY/EXECUTOR=              本次发布执行人；与架构、IMAGE_TAG 一起用于推导 namespace
 #   IMAGE_TAG=                本次镜像标签；与架构、执行人一起用于推导 namespace
@@ -49,6 +50,8 @@ LOG_FILE="${LOG_FILE:-/tmp/cleanup-env_$(date +%Y%m%d_%H%M%S).log}"
 NODE="${NODE:-${K8S_NODE_NAME:-}}"
 WHITELIST_NS="${WHITELIST_NS:-}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
+FORCE_STALE_NODEPORT_CLEAN="${FORCE_STALE_NODEPORT_CLEAN:-0}"
+CLEANUP_CONFLICTING_NODEPORT="${CLEANUP_CONFLICTING_NODEPORT:-0}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
@@ -200,6 +203,10 @@ node_port_for_ip() {
         192.168.47.35) echo 31008 ;; 192.168.47.181) echo 31009 ;;
         192.168.47.115) echo 31040 ;; 192.168.47.3) echo 31041 ;; 192.168.47.71) echo 31042 ;;
         192.168.47.44) echo 31043 ;; 192.168.47.214) echo 31044 ;; 192.168.47.92) echo 31035 ;; 192.168.47.148) echo 31036 ;;
+        192.168.47.4) echo 32004 ;; 192.168.47.109) echo 32109 ;; 192.168.47.112) echo 32112 ;;
+        192.168.47.201) echo 32201 ;; 192.168.47.85) echo 32085 ;; 192.168.47.141) echo 32141 ;;
+        192.168.47.90) echo 32090 ;; 192.168.47.15) echo 32015 ;; 192.168.47.32) echo 32032 ;; 192.168.47.246) echo 32246 ;;
+        192.168.47.28) echo 32028 ;; 192.168.47.203) echo 32203 ;; 192.168.47.95) echo 32095 ;;
         *) echo 31365 ;;
     esac
 }
@@ -241,6 +248,14 @@ port_listener_pids() {
     fi
     log "ERROR: 无 ss/lsof，无法验证 NodePort $port 是否被占用"
     return 1
+}
+
+service_has_backends() {
+    local ns=$1 name=$2 addresses slices
+    addresses=$(kubectl get endpoints "$name" -n "$ns" -o jsonpath='{range .subsets[*].addresses[*]}x{end}' 2>/dev/null || true)
+    [[ -n "$addresses" ]] && return 0
+    slices=$(kubectl get endpointslice -n "$ns" -l "kubernetes.io/service-name=$name" -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}x{end}' 2>/dev/null || true)
+    [[ -n "$slices" ]]
 }
 
 terminate_port_listener() {
@@ -286,12 +301,85 @@ cleanup_current_release_resources() {
     probe_k8s
     [[ "$HAS_KUBECTL" == "1" ]] || { log "ERROR: kubectl 不可用，不能删除本次 Service"; return 1; }
     log "=== 清理本次发布资源 namespace=$CLEANUP_NAMESPACE service=$CLEANUP_SERVICE_NAME nodePort=$CLEANUP_NODE_PORT ==="
-    if [[ "$DRY_RUN" == "1" ]]; then
-        log "  [DRY_RUN] kubectl delete service $CLEANUP_SERVICE_NAME -n $CLEANUP_NAMESPACE --ignore-not-found --wait=true"
-    else
-        kubectl delete service "$CLEANUP_SERVICE_NAME" -n "$CLEANUP_NAMESPACE" --ignore-not-found --wait=true || return 1
+    local -a services=()
+    mapfile -t services < <(kubectl get service -n "$CLEANUP_NAMESPACE" -o name 2>/dev/null || true)
+    if ((${#services[@]} == 0)); then
+        services=("service/$CLEANUP_SERVICE_NAME")
     fi
+    for service in "${services[@]}"; do
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  [DRY_RUN] kubectl delete $service -n $CLEANUP_NAMESPACE --ignore-not-found --wait=true"
+        else
+            log "  删除发布命名空间 Service: $CLEANUP_NAMESPACE/$service"
+            kubectl delete "$service" -n "$CLEANUP_NAMESPACE" --ignore-not-found --wait=true || return 1
+        fi
+    done
     terminate_port_listener "$CLEANUP_NODE_PORT"
+}
+
+# A stale NodePort can remain when a release namespace has no Pods.  It still
+# reserves the port cluster-wide, but strict target-only mode intentionally does
+# not perform cluster-wide NodePort cleanup.
+# Strict target-only mode intentionally does not perform cluster-wide NodePort
+# cleanup.  These compatibility entry points are no-ops so stale environment
+# variables cannot cause deletion in another namespace or on another machine.
+cleanup_stale_nodeport_services() {
+    log "跳过跨命名空间 NodePort 清理：仅允许操作当前发布命名空间"
+    return 0
+}
+
+service_has_backends() {
+    local ns=$1 name=$2 addresses slices
+    addresses=$(kubectl get endpoints "$name" -n "$ns" -o jsonpath='{range .subsets[*].addresses[*]}x{end}' 2>/dev/null || true)
+    [[ -n "$addresses" ]] && return 0
+    slices=$(kubectl get endpointslice -n "$ns" -l "kubernetes.io/service-name=$name" -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}x{end}' 2>/dev/null || true)
+    [[ -n "$slices" ]]
+}
+
+cleanup_conflicting_nodeport_services() {
+    [[ "$CLEANUP_CONFLICTING_NODEPORT" == "1" ]] || return 0
+    [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] || return 0
+    probe_k8s
+    [[ "$HAS_KUBECTL" == "1" ]] || return 0
+    read_whitelist
+    local service_json ns name type ports labels matched
+    service_json="$(kubectl get service -A -o json 2>/dev/null)" || return 1
+    while IFS=$'\t' read -r ns name type ports labels; do
+        [[ "$type" == "NodePort" && -n "$ns" && -n "$name" ]] || continue
+        case ",$ports," in
+            *,"$CLEANUP_NODE_PORT",*) ;;
+            *) continue ;;
+        esac
+        [[ "$ns" != "${CLEANUP_NAMESPACE:-}" ]] || continue
+        is_whitelisted "$ns" && continue
+        matched=0
+        [[ "$ns" == xds-* || "$name" == "ray-svc" || "$name" == xds-* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/instance=xds'* ]] && matched=1
+        [[ "$labels" == *'app.kubernetes.io/part-of=xds'* ]] && matched=1
+        ((matched == 1)) || continue
+        if service_has_backends "$ns" "$name"; then
+            log "跳过仍有后端的冲突 Service（不影响其它机器）: $ns/$name port=$CLEANUP_NODE_PORT"
+            continue
+        fi
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "  [DRY_RUN] kubectl delete service $name -n $ns --ignore-not-found --wait=true"
+        else
+            log "删除占用本次 NodePort 的孤立 Service: $ns/$name port=$CLEANUP_NODE_PORT"
+            kubectl delete service "$name" -n "$ns" --ignore-not-found --wait=true || return 1
+        fi
+    done < <(python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+for item in data.get("items", []):
+    meta=item.get("metadata", {})
+    spec=item.get("spec", {})
+    if spec.get("type") != "NodePort":
+        continue
+    ports=",".join(str(p.get("nodePort")) for p in spec.get("ports", []) if p.get("nodePort"))
+    labels=" ".join(f"{k}={v}" for k,v in (meta.get("labels") or {}).items())
+    print("\t".join((meta.get("namespace", ""), meta.get("name", ""), spec.get("type", ""), ports, labels)))
+' <<<"$service_json")
+    return 0
 }
 
 # ---------------- STEP: clean-containers ----------------
@@ -837,6 +925,10 @@ do_standardize() {
                 else
                     cleanup_current_release_resources || return 1
                 fi
+                # 严格目标机模式：不扫描集群其它命名空间，也不卸载其它
+                # release；仅删除当前目标端口对应且无后端的孤立 Service。
+                [[ -n "$CLEANUP_NODE_PORT" ]] || CLEANUP_NODE_PORT="$(resolved_cleanup_node_port)"
+                cleanup_conflicting_nodeport_services || return 1
                 ;;
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
@@ -881,7 +973,7 @@ do_remote() {
     remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE FORCE_STALE_NODEPORT_CLEAN CLEANUP_CONFLICTING_NODEPORT NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
@@ -928,7 +1020,12 @@ main() {
         kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
         hugepages) step_hugepages "$HUGEPAGE_PATH";;
-        release-resources) cleanup_current_release_resources;;
+        release-resources)
+            cleanup_current_release_resources && {
+                [[ -n "$CLEANUP_NODE_PORT" ]] || CLEANUP_NODE_PORT="$(resolved_cleanup_node_port)"
+                cleanup_conflicting_nodeport_services
+            }
+            ;;
         uncordon) probe_k8s; step_uncordon;;
         *) die "未知 ACTION: $ACTION";;
     esac
